@@ -1,16 +1,21 @@
 {
-  "name": "basic-nodejs-project",
-  "version": "1.0.0",
-  "description": "A basic Node.js project",
+  "name": "nodejs-learning-project",
+  "version": "2.0.0",
+  "description": "Node.js 学习项目 - 从初级到中级功能",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "server": "node server.js",
+    "dev": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
     "nodejs",
-    "basic",
-    "starter"
+    "learning",
+    "http-server",
+    "restful-api",
+    "beginner",
+    "intermediate"
   ],
   "author": "",
   "license": "ISC"

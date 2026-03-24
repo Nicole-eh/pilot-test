@@ -24,3 +24,6 @@ Thumbs.db
 dist/
 build/
 *.log
+
+# Data files (optional - you can track data/ if you want)
+# data/
