@@ -1,10 +1,10 @@
 # Node.js 学习项目 🚀
 
-从初级到中级的 Node.js 完整学习项目，包含命令行工具、HTTP 服务器和 RESTful API。
+从初级到高级的 Node.js 完整学习项目，包含命令行工具、HTTP 服务器、RESTful API 和 JWT 认证系统。
 
 ## 📚 项目概览
 
-这个项目分为两个层级，循序渐进地学习 Node.js 开发：
+这个项目分为三个层级，循序渐进地学习 Node.js 开发：
 
 ### 🌱 初级功能 (index.js)
 - ✅ 命令行参数处理
@@ -19,6 +19,15 @@
 - ✅ CSV 数据导出
 - ✅ 数据统计分析
 - ✅ 漂亮的 Web 界面
+
+### 🔐 高级功能 (auth-server.js)
+- ✅ JWT 身份认证
+- ✅ 用户注册和登录
+- ✅ 密码加密（PBKDF2）
+- ✅ Token 刷新机制
+- ✅ 权限控制（RBAC）
+- ✅ 认证中间件
+- ✅ 生产级安全实践
 
 ---
 
@@ -60,12 +69,29 @@ node server.js
 # http://localhost:3000
 ```
 
+### 运行高级功能（JWT 认证系统）
+```bash
+# 启动认证服务器
+npm run auth
+# 或者
+node auth-server.js
+
+# 打开浏览器访问
+# http://localhost:4000
+
+# 运行自动化测试
+npm run test:auth
+# 或者
+./test-auth.sh
+```
+
 ---
 
 ## 📖 详细文档
 
 - [初级功能说明](./初级功能说明.md) - 命令行工具开发
 - [中级功能说明](./中级功能说明.md) - HTTP 服务器和 API 开发
+- [高级功能说明 - JWT 认证](./高级功能说明-JWT认证.md) - 身份认证和授权系统
 
 ---
 
@@ -87,13 +113,22 @@ node server.js
 6. 数据持久化
 7. 错误处理和状态码
 
-### 第三阶段：高级功能 🚀 (即将推出)
-- 数据库集成 (SQLite/MongoDB)
-- 身份验证和授权 (JWT)
-- 中间件系统
+### 第三阶段：高级功能 🚀
+1. JWT 身份认证 ✅
+2. Token 生成和验证 ✅
+3. 密码加密和安全 ✅
+4. 认证中间件 ✅
+5. 权限控制（RBAC）✅
+6. Token 刷新机制 ✅
+
+### 第四阶段：进阶功能 🎯 (规划中)
+- 数据库集成 (PostgreSQL/MongoDB)
 - WebSocket 实时通信
-- 单元测试
-- 部署和 DevOps
+- 文件上传和处理
+- 邮件发送服务
+- 单元测试和集成测试
+- Docker 容器化
+- CI/CD 自动化部署
 
 ---
 
@@ -101,16 +136,22 @@ node server.js
 
 ```
 pilot-test/
-├── index.js                 # 初级功能主文件
-├── server.js                # 中级功能 HTTP 服务器
-├── package.json             # 项目配置
-├── .gitignore              # Git 忽略文件
-├── README.md               # 项目说明（本文件）
-├── 初级功能说明.md          # 初级功能详细文档
-├── 中级功能说明.md          # 中级功能详细文档
-├── log.txt                 # 日志文件
+├── index.js                      # 初级功能主文件
+├── server.js                     # 中级功能 HTTP 服务器
+├── auth-server.js                # 高级功能 JWT 认证服务器
+├── package.json                  # 项目配置
+├── .gitignore                    # Git 忽略文件
+├── README.md                     # 项目说明（本文件）
+├── 初级功能说明.md                # 初级功能详细文档
+├── 中级功能说明.md                # 中级功能详细文档
+├── 高级功能说明-JWT认证.md        # 高级功能详细文档
+├── test-api.sh                   # API 测试脚本
+├── test-auth.sh                  # 认证系统测试脚本
+├── log.txt                       # 日志文件
 └── data/
-    └── users.json          # 用户数据（自动生成）
+    ├── users.json                # 用户数据（RESTful API）
+    ├── auth-users.json           # 认证用户数据
+    └── refresh-tokens.json       # 刷新令牌数据
 ```
 
 ---
