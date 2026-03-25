@@ -1,21 +1,29 @@
 {
   "name": "nodejs-learning-project",
-  "version": "2.0.0",
-  "description": "Node.js 学习项目 - 从初级到中级功能",
+  "version": "3.0.0",
+  "description": "Node.js 学习项目 - 从初级到高级功能（CLI + HTTP + JWT 认证）",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "server": "node server.js",
+    "auth": "node auth-server.js",
     "dev": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev:auth": "node auth-server.js",
+    "test:api": "bash test-api.sh",
+    "test:auth": "bash test-auth.sh"
   },
   "keywords": [
     "nodejs",
     "learning",
     "http-server",
     "restful-api",
+    "jwt",
+    "authentication",
+    "authorization",
+    "security",
     "beginner",
-    "intermediate"
+    "intermediate",
+    "advanced"
   ],
   "author": "",
   "license": "ISC"

@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "username": "testuser",
+    "email": "test@example.com",
+    "name": "测试用户",
+    "password": "6322f73eebfade011823cdb9eb64c1a6:49104a8a9643e937ad5cd71c69f4b1711a13be9cee35a6660dd4a24b25ec0c5df0dcd70b78d2f3ff10758297c71ee080f5c1ba81a8f6ff527caf153347153fb7",
+    "createdAt": "2026-03-25T03:54:28.146Z",
+    "role": "user"
+  },
+  {
+    "id": 2,
+    "username": "admin",
+    "email": "admin@example.com",
+    "name": "管理员",
+    "password": "3a5cd8321466a2de49040edd9b2b1b79:80e854b9c414a80415eb239600d50dfccc4382cc0ebf0c3be5a259cddec0a96edb45436f86053276f72668ca2e431add536d38cef47f44aa1667720301762362",
+    "createdAt": "2026-03-25T03:54:28.253Z",
+    "role": "user"
+  }
+]
