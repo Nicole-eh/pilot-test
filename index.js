@@ -15,6 +15,7 @@ function greet(name = 'World') {
 
 // ==================== 功能 2: 文件读写（日志功能）====================
 const LOG_FILE = path.join(__dirname, 'log.txt');
+const TODO_FILE = path.join(__dirname, 'data', 'todos.json');
 
 function writeLog(message) {
   const timestamp = new Date().toLocaleString('zh-CN', {
@@ -92,6 +93,128 @@ function calculator(operation, num1, num2) {
   }
 }
 
+// ==================== 功能 4: TODO 应用（增删改查）====================
+
+// 读取 TODO 数据
+function loadTodos() {
+  try {
+    if (!fs.existsSync(TODO_FILE)) {
+      return [];
+    }
+    const data = fs.readFileSync(TODO_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('✗ 读取 TODO 数据失败:', error.message);
+    return [];
+  }
+}
+
+// 保存 TODO 数据
+function saveTodos(todos) {
+  try {
+    const dir = path.dirname(TODO_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(TODO_FILE, JSON.stringify(todos, null, 2), 'utf8');
+  } catch (error) {
+    console.error('✗ 保存 TODO 数据失败:', error.message);
+  }
+}
+
+// 添加 TODO
+function addTodo(text) {
+  if (!text || text.trim().length === 0) {
+    console.log('✗ 请输入 TODO 内容');
+    return;
+  }
+  const todos = loadTodos();
+  const newTodo = {
+    id: todos.length > 0 ? Math.max(...todos.map(t => t.id)) + 1 : 1,
+    text: text.trim(),
+    done: false,
+    createdAt: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+  };
+  todos.push(newTodo);
+  saveTodos(todos);
+  console.log(`✓ 已添加 TODO #${newTodo.id}: ${newTodo.text}`);
+  writeLog(`添加 TODO: ${newTodo.text}`);
+}
+
+// 列出所有 TODO
+function listTodos() {
+  const todos = loadTodos();
+  if (todos.length === 0) {
+    console.log('📝 还没有任何 TODO，使用 "node index.js todo add <内容>" 添加一个吧！');
+    return;
+  }
+
+  const pending = todos.filter(t => !t.done);
+  const completed = todos.filter(t => t.done);
+
+  console.log('📝 TODO 列表：');
+  console.log('─────────────────────────────────────');
+
+  if (pending.length > 0) {
+    console.log(`\n📌 待完成 (${pending.length}):`);
+    pending.forEach(t => {
+      console.log(`  [ ] #${t.id} ${t.text}  (${t.createdAt})`);
+    });
+  }
+
+  if (completed.length > 0) {
+    console.log(`\n✅ 已完成 (${completed.length}):`);
+    completed.forEach(t => {
+      console.log(`  [x] #${t.id} ${t.text}  (${t.createdAt})`);
+    });
+  }
+
+  console.log('\n─────────────────────────────────────');
+  console.log(`总计: ${todos.length} 项 | 待完成: ${pending.length} | 已完成: ${completed.length}`);
+}
+
+// 完成 TODO
+function doneTodo(idStr) {
+  const id = parseInt(idStr);
+  if (isNaN(id)) {
+    console.log('✗ 请输入有效的 TODO ID（数字）');
+    return;
+  }
+  const todos = loadTodos();
+  const todo = todos.find(t => t.id === id);
+  if (!todo) {
+    console.log(`✗ 未找到 ID 为 ${id} 的 TODO`);
+    return;
+  }
+  if (todo.done) {
+    console.log(`ℹ TODO #${id} 已经是完成状态了`);
+    return;
+  }
+  todo.done = true;
+  saveTodos(todos);
+  console.log(`✓ 已完成 TODO #${id}: ${todo.text}`);
+  writeLog(`完成 TODO: ${todo.text}`);
+}
+
+// 删除 TODO
+function removeTodo(idStr) {
+  const id = parseInt(idStr);
+  if (isNaN(id)) {
+    console.log('✗ 请输入有效的 TODO ID（数字）');
+    return;
+  }
+  const todos = loadTodos();
+  const index = todos.findIndex(t => t.id === id);
+  if (index === -1) {
+    console.log(`✗ 未找到 ID 为 ${id} 的 TODO`);
+    return;
+  }
+  const removed = todos.splice(index, 1)[0];
+  saveTodos(todos);
+  console.log(`✓ 已删除 TODO #${id}: ${removed.text}`);
+  writeLog(`删除 TODO: ${removed.text}`);
+}
+
 // ==================== 显示帮助信息 ====================
 function showHelp() {
   console.log(`
@@ -114,6 +237,12 @@ function showHelp() {
   node index.js subtract 10 4     # 减法：10 - 4
   node index.js multiply 6 7      # 乘法：6 × 7
   node index.js divide 20 4       # 除法：20 ÷ 4
+
+【功能 4 - TODO 应用】
+  node index.js todo              # 查看所有 TODO
+  node index.js todo add 学习 Node.js  # 添加 TODO
+  node index.js todo done 1       # 完成 TODO（按 ID）
+  node index.js todo remove 1     # 删除 TODO（按 ID）
 
 【其他】
   node index.js help              # 显示此帮助信息
@@ -162,6 +291,40 @@ function main() {
       readLog();
       break;
 
+    case 'todo':
+    case '待办':
+      const subCommand = args[1] ? args[1].toLowerCase() : 'list';
+      switch (subCommand) {
+        case 'add':
+        case '添加':
+          const todoText = args.slice(2).join(' ');
+          addTodo(todoText);
+          break;
+        case 'done':
+        case '完成':
+          if (args.length < 3) {
+            console.log('✗ 用法: node index.js todo done <ID>');
+          } else {
+            doneTodo(args[2]);
+          }
+          break;
+        case 'remove':
+        case 'delete':
+        case '删除':
+          if (args.length < 3) {
+            console.log('✗ 用法: node index.js todo remove <ID>');
+          } else {
+            removeTodo(args[2]);
+          }
+          break;
+        case 'list':
+        case '列表':
+        default:
+          listTodos();
+          break;
+      }
+      break;
+
     case 'add':
     case 'subtract':
     case 'multiply':
@@ -199,5 +362,9 @@ module.exports = {
   greet,
   calculator,
   writeLog,
-  readLog
+  readLog,
+  addTodo,
+  listTodos,
+  doneTodo,
+  removeTodo
 };
