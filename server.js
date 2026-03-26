@@ -5,13 +5,15 @@ const url = require('url');
 const fs = require('fs');
 const path = require('path');
 const JsonStore = require('./store');
+const auth = require('./auth');
 
 /**
- * 中级功能 Node.js 应用 - HTTP 服务器和 RESTful API
+ * Node.js 应用 - HTTP 服务器 + RESTful API + JWT 认证
  * 功能：
  * 1. HTTP Web 服务器（静态文件服务）
  * 2. RESTful API（用户 CRUD）
  * 3. JSON 数据处理和 CSV 导出
+ * 4. JWT 身份验证 + 角色权限控制 (NEW!)
  */
 
 // ==================== 数据存储 ====================
@@ -411,6 +413,122 @@ function handleDeleteTodo(req, res, id) {
   });
 }
 
+// ==================== 认证 API ====================
+
+// POST /api/auth/register - 用户注册
+async function handleRegister(req, res) {
+  try {
+    const body = await parseBody(req);
+    const result = await auth.register(body.username, body.password, body.role);
+    sendJSON(res, result.status, {
+      success: result.success,
+      message: result.message,
+      data: result.data || undefined
+    });
+  } catch (error) {
+    sendJSON(res, 500, { success: false, message: error.message });
+  }
+}
+
+// POST /api/auth/login - 用户登录
+async function handleLogin(req, res) {
+  try {
+    const body = await parseBody(req);
+    const result = await auth.login(body.username, body.password);
+    sendJSON(res, result.status, {
+      success: result.success,
+      message: result.message,
+      data: result.data || undefined
+    });
+  } catch (error) {
+    sendJSON(res, 500, { success: false, message: error.message });
+  }
+}
+
+// POST /api/auth/refresh - 刷新 Token
+async function handleRefresh(req, res) {
+  try {
+    const body = await parseBody(req);
+    const result = auth.refresh(body.refreshToken);
+    sendJSON(res, result.status, {
+      success: result.success,
+      message: result.message,
+      data: result.data || undefined
+    });
+  } catch (error) {
+    sendJSON(res, 500, { success: false, message: error.message });
+  }
+}
+
+// POST /api/auth/logout - 退出登录
+async function handleLogout(req, res) {
+  try {
+    const body = await parseBody(req);
+    const result = auth.logout(body.refreshToken);
+    sendJSON(res, result.status, {
+      success: result.success,
+      message: result.message
+    });
+  } catch (error) {
+    sendJSON(res, 500, { success: false, message: error.message });
+  }
+}
+
+// GET /api/auth/profile - 获取当前用户信息（需认证）
+function handleGetProfile(req, res) {
+  const authResult = auth.authenticate(req);
+  if (!authResult.authenticated) {
+    sendJSON(res, 401, { success: false, message: authResult.error });
+    return;
+  }
+  const result = auth.getProfile(authResult.user.id);
+  sendJSON(res, result.status, {
+    success: result.success,
+    data: result.data || undefined,
+    message: result.message || undefined
+  });
+}
+
+// GET /api/auth/accounts - 获取所有账号（仅 admin）
+function handleGetAccounts(req, res) {
+  const authResult = auth.authenticate(req);
+  if (!authResult.authenticated) {
+    sendJSON(res, 401, { success: false, message: authResult.error });
+    return;
+  }
+  const authzResult = auth.authorize(authResult.user, 'admin');
+  if (!authzResult.authorized) {
+    sendJSON(res, 403, { success: false, message: authzResult.error });
+    return;
+  }
+  const result = auth.getAllAccounts();
+  sendJSON(res, result.status, {
+    success: result.success,
+    count: result.data ? result.data.length : 0,
+    data: result.data
+  });
+}
+
+// DELETE /api/auth/accounts/:id - 删除账号（仅 admin）
+function handleDeleteAccount(req, res, id) {
+  const authResult = auth.authenticate(req);
+  if (!authResult.authenticated) {
+    sendJSON(res, 401, { success: false, message: authResult.error });
+    return;
+  }
+  const authzResult = auth.authorize(authResult.user, 'admin');
+  if (!authzResult.authorized) {
+    sendJSON(res, 403, { success: false, message: authzResult.error });
+    return;
+  }
+  const result = auth.deleteAccount(id, authResult.user.id);
+  sendJSON(res, result.status, {
+    success: result.success,
+    message: result.message,
+    data: result.data || undefined
+  });
+}
+
 // ==================== 主页 HTML ====================
 function getHomePage() {
   return `
@@ -419,7 +537,7 @@ function getHomePage() {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Node.js 中级功能 - HTTP 服务器 & RESTful API</title>
+  <title>Node.js 学习项目 - HTTP 服务器 & RESTful API & JWT 认证</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -548,8 +666,8 @@ function getHomePage() {
 </head>
 <body>
   <div class="container">
-    <h1>🚀 Node.js 中级功能演示</h1>
-    <p class="subtitle">HTTP 服务器 + RESTful API + 数据处理</p>
+    <h1>🚀 Node.js 全功能演示</h1>
+    <p class="subtitle">HTTP 服务器 + RESTful API + JWT 认证 + 角色权限</p>
 
     <div class="section">
       <h2>📊 服务器状态</h2>
@@ -640,14 +758,61 @@ function getHomePage() {
     </div>
 
     <div class="section">
+      <h2>🔐 认证 API 端点 (JWT)</h2>
+      <ul class="api-list">
+        <li class="api-item">
+          <span class="method post">POST</span>
+          <span class="endpoint">/api/auth/register</span>
+          <span class="description">用户注册</span>
+        </li>
+        <li class="api-item">
+          <span class="method post">POST</span>
+          <span class="endpoint">/api/auth/login</span>
+          <span class="description">用户登录（获取 Token）</span>
+        </li>
+        <li class="api-item">
+          <span class="method post">POST</span>
+          <span class="endpoint">/api/auth/refresh</span>
+          <span class="description">刷新 Access Token</span>
+        </li>
+        <li class="api-item">
+          <span class="method post">POST</span>
+          <span class="endpoint">/api/auth/logout</span>
+          <span class="description">退出登录（撤销 Token）</span>
+        </li>
+        <li class="api-item">
+          <span class="method get">GET</span>
+          <span class="endpoint">/api/auth/profile</span>
+          <span class="description">🔒 获取个人信息</span>
+        </li>
+        <li class="api-item">
+          <span class="method get">GET</span>
+          <span class="endpoint">/api/auth/accounts</span>
+          <span class="description">🔒👑 所有账号（仅 admin）</span>
+        </li>
+        <li class="api-item">
+          <span class="method delete">DELETE</span>
+          <span class="endpoint">/api/auth/accounts/:id</span>
+          <span class="description">🔒👑 删除账号（仅 admin）</span>
+        </li>
+      </ul>
+      <p style="margin-top:10px;color:#888;font-size:0.85em;">
+        🔒 = 需要 Bearer Token &nbsp;&nbsp; 👑 = 仅管理员
+      </p>
+    </div>
+
+    <div class="section">
       <h2>🧪 快速测试</h2>
       <p style="margin-bottom: 15px;">使用以下命令测试 API：</p>
       <div style="background: white; padding: 15px; border-radius: 8px;">
-        <p><strong>获取所有用户：</strong></p>
-        <code>curl http://localhost:3000/api/users</code>
+        <p><strong>1. 注册用户：</strong></p>
+        <code>curl -X POST http://localhost:3000/api/auth/register -H "Content-Type: application/json" -d '{"username":"testuser","password":"123456"}'</code>
         <br><br>
-        <p><strong>创建新用户：</strong></p>
-        <code>curl -X POST http://localhost:3000/api/users -H "Content-Type: application/json" -d '{"name":"王五","email":"wangwu@example.com","age":27}'</code>
+        <p><strong>2. 登录获取 Token：</strong></p>
+        <code>curl -X POST http://localhost:3000/api/auth/login -H "Content-Type: application/json" -d '{"username":"testuser","password":"123456"}'</code>
+        <br><br>
+        <p><strong>3. 用 Token 访问受保护接口：</strong></p>
+        <code>curl http://localhost:3000/api/auth/profile -H "Authorization: Bearer &lt;你的token&gt;"</code>
       </div>
       <div style="margin-top: 15px;">
         <a href="/api/users" class="button">查看用户数据</a>
@@ -657,8 +822,8 @@ function getHomePage() {
     </div>
 
     <div class="footer">
-      <p>💻 使用 Node.js 原生模块构建 | 无需外部依赖</p>
-      <p>端口: 3000 | 数据文件: data/users.json</p>
+      <p>💻 Node.js + jsonwebtoken + bcryptjs</p>
+      <p>端口: 3000 | 数据: data/users.json, data/accounts.json</p>
     </div>
   </div>
 
@@ -692,7 +857,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type'
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
     });
     res.end();
     return;
@@ -708,6 +873,52 @@ const server = http.createServer(async (req, res) => {
 
     // API 路由
     if (pathname.startsWith('/api')) {
+
+      // ---------- 认证路由 ----------
+      // POST /api/auth/register
+      if (pathname === '/api/auth/register' && method === 'POST') {
+        await handleRegister(req, res);
+        return;
+      }
+
+      // POST /api/auth/login
+      if (pathname === '/api/auth/login' && method === 'POST') {
+        await handleLogin(req, res);
+        return;
+      }
+
+      // POST /api/auth/refresh
+      if (pathname === '/api/auth/refresh' && method === 'POST') {
+        await handleRefresh(req, res);
+        return;
+      }
+
+      // POST /api/auth/logout
+      if (pathname === '/api/auth/logout' && method === 'POST') {
+        await handleLogout(req, res);
+        return;
+      }
+
+      // GET /api/auth/profile (需认证)
+      if (pathname === '/api/auth/profile' && method === 'GET') {
+        handleGetProfile(req, res);
+        return;
+      }
+
+      // GET /api/auth/accounts (仅 admin)
+      if (pathname === '/api/auth/accounts' && method === 'GET') {
+        handleGetAccounts(req, res);
+        return;
+      }
+
+      // DELETE /api/auth/accounts/:id (仅 admin)
+      const accountMatch = pathname.match(/^\/api\/auth\/accounts\/(\d+)$/);
+      if (accountMatch && method === 'DELETE') {
+        handleDeleteAccount(req, res, accountMatch[1]);
+        return;
+      }
+
+      // ---------- 用户 CRUD 路由 ----------
       // GET /api/users
       if (pathname === '/api/users' && method === 'GET') {
         handleGetUsers(req, res);

@@ -1,0 +1,16 @@
+[
+  {
+    "id": 1,
+    "username": "testuser",
+    "password": "$2b$10$vqzrCWY9/mt8Z.VeEluzIOqC7uk.TOatIPu7mIcyJ0T1MtnLMfU82",
+    "role": "user",
+    "createdAt": "2026-03-26T09:11:12.711Z"
+  },
+  {
+    "id": 2,
+    "username": "admin",
+    "password": "$2b$10$MrBuwGSDNm07pB7kjjWqSuqq7R46YDbUw8OKkZ4DP1ZHuSrAppz.a",
+    "role": "admin",
+    "createdAt": "2026-03-26T09:11:12.887Z"
+  }
+]
