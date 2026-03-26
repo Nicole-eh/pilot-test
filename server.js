@@ -4,6 +4,7 @@ const http = require('http');
 const url = require('url');
 const fs = require('fs');
 const path = require('path');
+const JsonStore = require('./store');
 
 /**
  * 中级功能 Node.js 应用 - HTTP 服务器和 RESTful API
@@ -314,6 +315,102 @@ function handleGetStats(req, res) {
   });
 }
 
+// ==================== TODO API ====================
+const TODOS_FILE = path.join(DATA_DIR, 'todos.json');
+const todoStore = new JsonStore(TODOS_FILE);
+
+// GET /api/todos - 获取所有 TODO
+function handleGetTodos(req, res) {
+  const todos = todoStore.getAll();
+  sendJSON(res, 200, {
+    success: true,
+    count: todos.length,
+    data: todos
+  });
+}
+
+// GET /api/todos/:id - 获取单个 TODO
+function handleGetTodo(req, res, id) {
+  const todo = todoStore.getById(id);
+  if (!todo) {
+    sendJSON(res, 404, {
+      success: false,
+      message: `未找到 ID 为 ${id} 的待办事项`
+    });
+    return;
+  }
+  sendJSON(res, 200, { success: true, data: todo });
+}
+
+// POST /api/todos - 创建 TODO
+async function handleCreateTodo(req, res) {
+  try {
+    const body = await parseBody(req);
+    if (!body.text || !body.text.trim()) {
+      sendJSON(res, 400, {
+        success: false,
+        message: '缺少必填字段：text'
+      });
+      return;
+    }
+    const todo = todoStore.create({
+      text: body.text.trim(),
+      done: false
+    });
+    sendJSON(res, 201, {
+      success: true,
+      message: '待办事项创建成功',
+      data: todo
+    });
+  } catch (error) {
+    sendJSON(res, 400, { success: false, message: error.message });
+  }
+}
+
+// PUT /api/todos/:id - 更新 TODO
+async function handleUpdateTodo(req, res, id) {
+  try {
+    const existing = todoStore.getById(id);
+    if (!existing) {
+      sendJSON(res, 404, {
+        success: false,
+        message: `未找到 ID 为 ${id} 的待办事项`
+      });
+      return;
+    }
+    const body = await parseBody(req);
+    const updates = {};
+    if (body.text !== undefined) updates.text = body.text.trim();
+    if (body.done !== undefined) updates.done = Boolean(body.done);
+
+    const updated = todoStore.update(id, updates);
+    sendJSON(res, 200, {
+      success: true,
+      message: '待办事项更新成功',
+      data: updated
+    });
+  } catch (error) {
+    sendJSON(res, 400, { success: false, message: error.message });
+  }
+}
+
+// DELETE /api/todos/:id - 删除 TODO
+function handleDeleteTodo(req, res, id) {
+  const deleted = todoStore.delete(id);
+  if (!deleted) {
+    sendJSON(res, 404, {
+      success: false,
+      message: `未找到 ID 为 ${id} 的待办事项`
+    });
+    return;
+  }
+  sendJSON(res, 200, {
+    success: true,
+    message: '待办事项删除成功',
+    data: deleted
+  });
+}
+
 // ==================== 主页 HTML ====================
 function getHomePage() {
   return `
@@ -511,6 +608,35 @@ function getHomePage() {
           <span class="description">导出 CSV 文件</span>
         </li>
       </ul>
+
+      <h2 style="margin-top:25px;">📝 TODO API 端点</h2>
+      <ul class="api-list">
+        <li class="api-item">
+          <span class="method get">GET</span>
+          <span class="endpoint">/api/todos</span>
+          <span class="description">获取所有待办</span>
+        </li>
+        <li class="api-item">
+          <span class="method get">GET</span>
+          <span class="endpoint">/api/todos/:id</span>
+          <span class="description">获取单个待办</span>
+        </li>
+        <li class="api-item">
+          <span class="method post">POST</span>
+          <span class="endpoint">/api/todos</span>
+          <span class="description">创建新待办</span>
+        </li>
+        <li class="api-item">
+          <span class="method put">PUT</span>
+          <span class="endpoint">/api/todos/:id</span>
+          <span class="description">更新待办</span>
+        </li>
+        <li class="api-item">
+          <span class="method delete">DELETE</span>
+          <span class="endpoint">/api/todos/:id</span>
+          <span class="description">删除待办</span>
+        </li>
+      </ul>
     </div>
 
     <div class="section">
@@ -623,6 +749,37 @@ const server = http.createServer(async (req, res) => {
       if (getUserMatch && method === 'DELETE') {
         handleDeleteUser(req, res, getUserMatch[1]);
         return;
+      }
+
+      // --- TODO API ---
+      // GET /api/todos
+      if (pathname === '/api/todos' && method === 'GET') {
+        handleGetTodos(req, res);
+        return;
+      }
+
+      // POST /api/todos
+      if (pathname === '/api/todos' && method === 'POST') {
+        await handleCreateTodo(req, res);
+        return;
+      }
+
+      // GET/PUT/DELETE /api/todos/:id
+      const getTodoMatch = pathname.match(/^\/api\/todos\/(\d+)$/);
+      if (getTodoMatch) {
+        const todoId = getTodoMatch[1];
+        if (method === 'GET') {
+          handleGetTodo(req, res, todoId);
+          return;
+        }
+        if (method === 'PUT') {
+          await handleUpdateTodo(req, res, todoId);
+          return;
+        }
+        if (method === 'DELETE') {
+          handleDeleteTodo(req, res, todoId);
+          return;
+        }
       }
 
       // API 404
