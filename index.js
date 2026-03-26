@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const JsonStore = require('./store');
 
 /**
  * 初级功能 Node.js 应用
@@ -52,7 +53,99 @@ function readLog() {
   }
 }
 
-// ==================== 功能 3: 简单计算器 ====================
+// ==================== 功能 3: TODO 待办事项 ====================
+const TODOS_FILE = path.join(__dirname, 'data', 'todos.json');
+const todoStore = new JsonStore(TODOS_FILE);
+
+function todoAdd(text) {
+  if (!text) {
+    console.log('  用法: node index.js todo add <内容>');
+    return;
+  }
+  const todo = todoStore.create({ text, done: false });
+  console.log(`  [#${todo.id}] "${todo.text}" 已添加`);
+}
+
+function todoList() {
+  const todos = todoStore.getAll();
+  if (todos.length === 0) {
+    console.log('  还没有待办事项，使用 "node index.js todo add <内容>" 添加');
+    return;
+  }
+  console.log(`  待办事项 (${todos.length} 项)：`);
+  console.log('  ' + '-'.repeat(50));
+  todos.forEach(t => {
+    const status = t.done ? '[x]' : '[ ]';
+    console.log(`  ${status} #${t.id}  ${t.text}`);
+  });
+  console.log('  ' + '-'.repeat(50));
+}
+
+function todoDone(id) {
+  if (!id) {
+    console.log('  用法: node index.js todo done <id>');
+    return;
+  }
+  const updated = todoStore.update(id, { done: true });
+  if (!updated) {
+    console.log(`  未找到 ID 为 ${id} 的待办事项`);
+    return;
+  }
+  console.log(`  [#${updated.id}] "${updated.text}" 已标记为完成`);
+}
+
+function todoUndone(id) {
+  if (!id) {
+    console.log('  用法: node index.js todo undone <id>');
+    return;
+  }
+  const updated = todoStore.update(id, { done: false });
+  if (!updated) {
+    console.log(`  未找到 ID 为 ${id} 的待办事项`);
+    return;
+  }
+  console.log(`  [#${updated.id}] "${updated.text}" 已标记为未完成`);
+}
+
+function todoRemove(id) {
+  if (!id) {
+    console.log('  用法: node index.js todo remove <id>');
+    return;
+  }
+  const deleted = todoStore.delete(id);
+  if (!deleted) {
+    console.log(`  未找到 ID 为 ${id} 的待办事项`);
+    return;
+  }
+  console.log(`  [#${deleted.id}] "${deleted.text}" 已删除`);
+}
+
+function handleTodo(args) {
+  const subCommand = (args[0] || '').toLowerCase();
+  switch (subCommand) {
+    case 'add':
+      todoAdd(args.slice(1).join(' '));
+      break;
+    case 'list':
+    case '':
+      todoList();
+      break;
+    case 'done':
+      todoDone(args[1]);
+      break;
+    case 'undone':
+      todoUndone(args[1]);
+      break;
+    case 'remove':
+    case 'rm':
+      todoRemove(args[1]);
+      break;
+    default:
+      console.log(`  未知子命令 "${subCommand}"。支持: add, list, done, undone, remove`);
+  }
+}
+
+// ==================== 功能 4: 简单计算器 ====================
 function calculator(operation, num1, num2) {
   const a = parseFloat(num1);
   const b = parseFloat(num2);
@@ -109,7 +202,14 @@ function showHelp() {
   node index.js log 今天学习了 Node.js
   node index.js logs              # 查看所有日志
 
-【功能 3 - 计算器】
+【功能 3 - 待办事项】
+  node index.js todo add 学习Node  # 添加待办
+  node index.js todo list          # 查看所有待办
+  node index.js todo done 1        # 标记 #1 完成
+  node index.js todo undone 1      # 标记 #1 未完成
+  node index.js todo remove 1      # 删除 #1
+
+【功能 4 - 计算器】
   node index.js add 5 3           # 加法：5 + 3
   node index.js subtract 10 4     # 减法：10 - 4
   node index.js multiply 6 7      # 乘法：6 × 7
@@ -162,6 +262,11 @@ function main() {
       readLog();
       break;
 
+    case 'todo':
+    case '待办':
+      handleTodo(args.slice(1));
+      break;
+
     case 'add':
     case 'subtract':
     case 'multiply':
@@ -199,5 +304,6 @@ module.exports = {
   greet,
   calculator,
   writeLog,
-  readLog
+  readLog,
+  todoStore
 };
