@@ -1,0 +1,695 @@
+#!/usr/bin/env node
+
+const http = require('http');
+const url = require('url');
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * 中级功能 Node.js 应用 - HTTP 服务器和 RESTful API
+ * 功能：
+ * 1. HTTP Web 服务器（静态文件服务）
+ * 2. RESTful API（用户 CRUD）
+ * 3. JSON 数据处理和 CSV 导出
+ */
+
+// ==================== 数据存储 ====================
+const DATA_DIR = path.join(__dirname, 'data');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+
+// 确保数据目录存在
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+// 初始化用户数据
+let users = [];
+if (fs.existsSync(USERS_FILE)) {
+  try {
+    const data = fs.readFileSync(USERS_FILE, 'utf8');
+    users = JSON.parse(data);
+  } catch (error) {
+    console.error('读取用户数据失败，使用空数组:', error.message);
+    users = [];
+  }
+} else {
+  // 创建示例数据
+  users = [
+    { id: 1, name: '张三', email: 'zhangsan@example.com', age: 25, createdAt: new Date().toISOString() },
+    { id: 2, name: '李四', email: 'lisi@example.com', age: 30, createdAt: new Date().toISOString() },
+    { id: 3, name: 'Alice', email: 'alice@example.com', age: 28, createdAt: new Date().toISOString() }
+  ];
+  saveUsers();
+}
+
+// 保存用户数据到文件
+function saveUsers() {
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+  } catch (error) {
+    console.error('保存用户数据失败:', error.message);
+  }
+}
+
+// ==================== 工具函数 ====================
+
+// 解析 JSON 请求体
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
+    });
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(new Error('无效的 JSON 格式'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+// 发送 JSON 响应
+function sendJSON(res, statusCode, data) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*'
+  });
+  res.end(JSON.stringify(data, null, 2));
+}
+
+// 发送 HTML 响应
+function sendHTML(res, statusCode, html) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/html; charset=utf-8'
+  });
+  res.end(html);
+}
+
+// 发送纯文本响应
+function sendText(res, statusCode, text) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/plain; charset=utf-8'
+  });
+  res.end(text);
+}
+
+// 发送 CSV 响应
+function sendCSV(res, statusCode, csv, filename) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+    'Access-Control-Allow-Origin': '*'
+  });
+  res.end(csv);
+}
+
+// ==================== 数据处理功能 ====================
+
+// 将用户数据转换为 CSV 格式
+function usersToCSV() {
+  if (users.length === 0) {
+    return 'id,name,email,age,createdAt\n';
+  }
+
+  const headers = 'id,name,email,age,createdAt\n';
+  const rows = users.map(user => {
+    return `${user.id},"${user.name}","${user.email}",${user.age},"${user.createdAt}"`;
+  }).join('\n');
+
+  return headers + rows;
+}
+
+// 统计数据
+function getStatistics() {
+  if (users.length === 0) {
+    return {
+      total: 0,
+      averageAge: 0,
+      oldestUser: null,
+      youngestUser: null
+    };
+  }
+
+  const ages = users.map(u => u.age);
+  const total = users.length;
+  const averageAge = ages.reduce((sum, age) => sum + age, 0) / total;
+  const oldestUser = users.reduce((oldest, user) =>
+    user.age > oldest.age ? user : oldest
+  );
+  const youngestUser = users.reduce((youngest, user) =>
+    user.age < youngest.age ? user : youngest
+  );
+
+  return {
+    total,
+    averageAge: Math.round(averageAge * 10) / 10,
+    oldestUser: { name: oldestUser.name, age: oldestUser.age },
+    youngestUser: { name: youngestUser.name, age: youngestUser.age }
+  };
+}
+
+// ==================== API 路由处理 ====================
+
+// GET /api/users - 获取所有用户
+function handleGetUsers(req, res) {
+  sendJSON(res, 200, {
+    success: true,
+    count: users.length,
+    data: users
+  });
+}
+
+// GET /api/users/:id - 获取单个用户
+function handleGetUser(req, res, id) {
+  const user = users.find(u => u.id === parseInt(id));
+  if (!user) {
+    sendJSON(res, 404, {
+      success: false,
+      message: `未找到 ID 为 ${id} 的用户`
+    });
+    return;
+  }
+  sendJSON(res, 200, {
+    success: true,
+    data: user
+  });
+}
+
+// POST /api/users - 创建新用户
+async function handleCreateUser(req, res) {
+  try {
+    const body = await parseBody(req);
+
+    // 验证必填字段
+    if (!body.name || !body.email) {
+      sendJSON(res, 400, {
+        success: false,
+        message: '缺少必填字段：name 和 email'
+      });
+      return;
+    }
+
+    // 检查邮箱是否已存在
+    if (users.find(u => u.email === body.email)) {
+      sendJSON(res, 400, {
+        success: false,
+        message: '该邮箱已被使用'
+      });
+      return;
+    }
+
+    // 创建新用户
+    const newUser = {
+      id: users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1,
+      name: body.name,
+      email: body.email,
+      age: body.age || 0,
+      createdAt: new Date().toISOString()
+    };
+
+    users.push(newUser);
+    saveUsers();
+
+    sendJSON(res, 201, {
+      success: true,
+      message: '用户创建成功',
+      data: newUser
+    });
+  } catch (error) {
+    sendJSON(res, 400, {
+      success: false,
+      message: error.message
+    });
+  }
+}
+
+// PUT /api/users/:id - 更新用户
+async function handleUpdateUser(req, res, id) {
+  try {
+    const userId = parseInt(id);
+    const userIndex = users.findIndex(u => u.id === userId);
+
+    if (userIndex === -1) {
+      sendJSON(res, 404, {
+        success: false,
+        message: `未找到 ID 为 ${id} 的用户`
+      });
+      return;
+    }
+
+    const body = await parseBody(req);
+    const updatedUser = {
+      ...users[userIndex],
+      name: body.name || users[userIndex].name,
+      email: body.email || users[userIndex].email,
+      age: body.age !== undefined ? body.age : users[userIndex].age,
+      updatedAt: new Date().toISOString()
+    };
+
+    // 检查邮箱是否被其他用户使用
+    if (body.email && body.email !== users[userIndex].email) {
+      if (users.find(u => u.email === body.email && u.id !== userId)) {
+        sendJSON(res, 400, {
+          success: false,
+          message: '该邮箱已被其他用户使用'
+        });
+        return;
+      }
+    }
+
+    users[userIndex] = updatedUser;
+    saveUsers();
+
+    sendJSON(res, 200, {
+      success: true,
+      message: '用户更新成功',
+      data: updatedUser
+    });
+  } catch (error) {
+    sendJSON(res, 400, {
+      success: false,
+      message: error.message
+    });
+  }
+}
+
+// DELETE /api/users/:id - 删除用户
+function handleDeleteUser(req, res, id) {
+  const userId = parseInt(id);
+  const userIndex = users.findIndex(u => u.id === userId);
+
+  if (userIndex === -1) {
+    sendJSON(res, 404, {
+      success: false,
+      message: `未找到 ID 为 ${id} 的用户`
+    });
+    return;
+  }
+
+  const deletedUser = users.splice(userIndex, 1)[0];
+  saveUsers();
+
+  sendJSON(res, 200, {
+    success: true,
+    message: '用户删除成功',
+    data: deletedUser
+  });
+}
+
+// GET /api/users/export/csv - 导出 CSV
+function handleExportCSV(req, res) {
+  const csv = usersToCSV();
+  sendCSV(res, 200, csv, 'users.csv');
+}
+
+// GET /api/stats - 获取统计信息
+function handleGetStats(req, res) {
+  const stats = getStatistics();
+  sendJSON(res, 200, {
+    success: true,
+    data: stats
+  });
+}
+
+// ==================== 主页 HTML ====================
+function getHomePage() {
+  return `
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Node.js 中级功能 - HTTP 服务器 & RESTful API</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #333;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 15px;
+      padding: 40px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    h1 {
+      color: #667eea;
+      margin-bottom: 10px;
+      font-size: 2.5em;
+    }
+    .subtitle {
+      color: #888;
+      margin-bottom: 30px;
+      font-size: 1.1em;
+    }
+    .section {
+      margin: 30px 0;
+      padding: 20px;
+      background: #f8f9fa;
+      border-radius: 10px;
+      border-left: 4px solid #667eea;
+    }
+    h2 {
+      color: #667eea;
+      margin-bottom: 15px;
+      font-size: 1.5em;
+    }
+    .api-list {
+      list-style: none;
+    }
+    .api-item {
+      background: white;
+      padding: 15px;
+      margin: 10px 0;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    .method {
+      font-weight: bold;
+      padding: 5px 10px;
+      border-radius: 5px;
+      margin-right: 15px;
+      min-width: 70px;
+      text-align: center;
+      font-size: 0.9em;
+    }
+    .get { background: #61affe; color: white; }
+    .post { background: #49cc90; color: white; }
+    .put { background: #fca130; color: white; }
+    .delete { background: #f93e3e; color: white; }
+    .endpoint {
+      font-family: 'Courier New', monospace;
+      color: #333;
+      flex: 1;
+    }
+    .description {
+      color: #888;
+      font-size: 0.9em;
+      margin-left: auto;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-top: 20px;
+    }
+    .stat-card {
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      text-align: center;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    .stat-value {
+      font-size: 2em;
+      font-weight: bold;
+      color: #667eea;
+      margin: 10px 0;
+    }
+    .stat-label {
+      color: #888;
+      font-size: 0.9em;
+    }
+    .button {
+      display: inline-block;
+      padding: 12px 24px;
+      background: #667eea;
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      margin: 5px;
+      transition: all 0.3s;
+    }
+    .button:hover {
+      background: #764ba2;
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    }
+    code {
+      background: #f0f0f0;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 40px;
+      color: #888;
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🚀 Node.js 中级功能演示</h1>
+    <p class="subtitle">HTTP 服务器 + RESTful API + 数据处理</p>
+
+    <div class="section">
+      <h2>📊 服务器状态</h2>
+      <div class="stats">
+        <div class="stat-card">
+          <div class="stat-label">用户总数</div>
+          <div class="stat-value" id="total-users">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">平均年龄</div>
+          <div class="stat-value" id="avg-age">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">服务器状态</div>
+          <div class="stat-value">✅</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>🔌 RESTful API 端点</h2>
+      <ul class="api-list">
+        <li class="api-item">
+          <span class="method get">GET</span>
+          <span class="endpoint">/api/users</span>
+          <span class="description">获取所有用户</span>
+        </li>
+        <li class="api-item">
+          <span class="method get">GET</span>
+          <span class="endpoint">/api/users/:id</span>
+          <span class="description">获取单个用户</span>
+        </li>
+        <li class="api-item">
+          <span class="method post">POST</span>
+          <span class="endpoint">/api/users</span>
+          <span class="description">创建新用户</span>
+        </li>
+        <li class="api-item">
+          <span class="method put">PUT</span>
+          <span class="endpoint">/api/users/:id</span>
+          <span class="description">更新用户</span>
+        </li>
+        <li class="api-item">
+          <span class="method delete">DELETE</span>
+          <span class="endpoint">/api/users/:id</span>
+          <span class="description">删除用户</span>
+        </li>
+        <li class="api-item">
+          <span class="method get">GET</span>
+          <span class="endpoint">/api/stats</span>
+          <span class="description">获取统计信息</span>
+        </li>
+        <li class="api-item">
+          <span class="method get">GET</span>
+          <span class="endpoint">/api/users/export/csv</span>
+          <span class="description">导出 CSV 文件</span>
+        </li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h2>🧪 快速测试</h2>
+      <p style="margin-bottom: 15px;">使用以下命令测试 API：</p>
+      <div style="background: white; padding: 15px; border-radius: 8px;">
+        <p><strong>获取所有用户：</strong></p>
+        <code>curl http://localhost:3000/api/users</code>
+        <br><br>
+        <p><strong>创建新用户：</strong></p>
+        <code>curl -X POST http://localhost:3000/api/users -H "Content-Type: application/json" -d '{"name":"王五","email":"wangwu@example.com","age":27}'</code>
+      </div>
+      <div style="margin-top: 15px;">
+        <a href="/api/users" class="button">查看用户数据</a>
+        <a href="/api/stats" class="button">查看统计信息</a>
+        <a href="/api/users/export/csv" class="button">导出 CSV</a>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>💻 使用 Node.js 原生模块构建 | 无需外部依赖</p>
+      <p>端口: 3000 | 数据文件: data/users.json</p>
+    </div>
+  </div>
+
+  <script>
+    // 加载统计数据
+    fetch('/api/stats')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          document.getElementById('total-users').textContent = data.data.total;
+          document.getElementById('avg-age').textContent = data.data.averageAge;
+        }
+      })
+      .catch(err => console.error('加载统计数据失败:', err));
+  </script>
+</body>
+</html>
+  `;
+}
+
+// ==================== HTTP 服务器 ====================
+const server = http.createServer(async (req, res) => {
+  const parsedUrl = url.parse(req.url, true);
+  const pathname = parsedUrl.pathname;
+  const method = req.method;
+
+  console.log(`[${new Date().toLocaleTimeString('zh-CN')}] ${method} ${pathname}`);
+
+  // 处理 CORS 预检请求
+  if (method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    });
+    res.end();
+    return;
+  }
+
+  // 路由处理
+  try {
+    // 主页
+    if (pathname === '/' && method === 'GET') {
+      sendHTML(res, 200, getHomePage());
+      return;
+    }
+
+    // API 路由
+    if (pathname.startsWith('/api')) {
+      // GET /api/users
+      if (pathname === '/api/users' && method === 'GET') {
+        handleGetUsers(req, res);
+        return;
+      }
+
+      // GET /api/stats
+      if (pathname === '/api/stats' && method === 'GET') {
+        handleGetStats(req, res);
+        return;
+      }
+
+      // GET /api/users/export/csv
+      if (pathname === '/api/users/export/csv' && method === 'GET') {
+        handleExportCSV(req, res);
+        return;
+      }
+
+      // POST /api/users
+      if (pathname === '/api/users' && method === 'POST') {
+        await handleCreateUser(req, res);
+        return;
+      }
+
+      // GET /api/users/:id
+      const getUserMatch = pathname.match(/^\/api\/users\/(\d+)$/);
+      if (getUserMatch && method === 'GET') {
+        handleGetUser(req, res, getUserMatch[1]);
+        return;
+      }
+
+      // PUT /api/users/:id
+      if (getUserMatch && method === 'PUT') {
+        await handleUpdateUser(req, res, getUserMatch[1]);
+        return;
+      }
+
+      // DELETE /api/users/:id
+      if (getUserMatch && method === 'DELETE') {
+        handleDeleteUser(req, res, getUserMatch[1]);
+        return;
+      }
+
+      // API 404
+      sendJSON(res, 404, {
+        success: false,
+        message: '未找到该 API 端点'
+      });
+      return;
+    }
+
+    // 其他请求 404
+    sendHTML(res, 404, `
+      <html>
+        <head><title>404 Not Found</title></head>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+          <h1>404 - 页面未找到</h1>
+          <p><a href="/" style="color: #667eea;">返回主页</a></p>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error('服务器错误:', error);
+    sendJSON(res, 500, {
+      success: false,
+      message: '服务器内部错误',
+      error: error.message
+    });
+  }
+});
+
+// ==================== 启动服务器 ====================
+const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0';
+
+server.listen(PORT, HOST, () => {
+  console.log(`
+╔═══════════════════════════════════════════════════════╗
+║                                                       ║
+║   🚀 Node.js HTTP 服务器已启动！                     ║
+║                                                       ║
+║   📍 地址: http://localhost:${PORT}                      ║
+║   📊 API:  http://localhost:${PORT}/api/users            ║
+║                                                       ║
+║   按 Ctrl+C 停止服务器                                ║
+║                                                       ║
+╚═══════════════════════════════════════════════════════╝
+  `);
+  console.log(`✅ 服务器运行在 http://localhost:${PORT}`);
+  console.log(`📁 数据文件: ${USERS_FILE}`);
+  console.log(`👥 当前用户数: ${users.length}\n`);
+});
+
+// 优雅关闭
+process.on('SIGTERM', () => {
+  console.log('\n⏹  收到 SIGTERM 信号，正在关闭服务器...');
+  server.close(() => {
+    console.log('✅ 服务器已关闭');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('\n\n⏹  收到 SIGINT 信号，正在关闭服务器...');
+  server.close(() => {
+    console.log('✅ 服务器已关闭');
+    process.exit(0);
+  });
+});
+
+module.exports = { server };

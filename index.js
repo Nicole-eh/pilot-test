@@ -16,27 +16,7 @@ function greet(name = 'World') {
 // ==================== 功能 2: 文件读写（日志功能）====================
 const LOG_FILE = path.join(__dirname, 'log.txt');
 
-function sanitize(input) {
-  return input
-    // 1. 限制长度，防止超大输入
-    .slice(0, 500)
-    // 2. 移除控制字符（保留常见中文和 emoji）
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-    // 3. 防止日志注入：将换行符替换为空格
-    .replace(/[\r\n]+/g, ' ')
-    // 4. 去掉首尾空白
-    .trim();
-}
-
 function writeLog(message) {
-  const cleanMessage = sanitize(message);
-
-  if (!cleanMessage) {
-    console.log('✗ 日志内容为空，未保存');
-    return;
-  }
-
   const timestamp = new Date().toLocaleString('zh-CN', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
@@ -46,7 +26,7 @@ function writeLog(message) {
     minute: '2-digit',
     second: '2-digit'
   });
-  const logEntry = `[${timestamp}] ${cleanMessage}\n`;
+  const logEntry = `[${timestamp}] ${message}\n`;
 
   try {
     fs.appendFileSync(LOG_FILE, logEntry, 'utf8');
@@ -218,7 +198,6 @@ if (require.main === module) {
 module.exports = {
   greet,
   calculator,
-  sanitize,
   writeLog,
   readLog
 };
