@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { logger } = require('./lib/logger');
 
 /**
  * 通用 JSON 文件存储模块
@@ -33,7 +34,7 @@ class JsonStore {
         const raw = fs.readFileSync(this.filePath, 'utf8');
         return JSON.parse(raw);
       } catch (error) {
-        console.error(`读取 ${this.filePath} 失败，使用默认数据:`, error.message);
+        logger.error('读取数据文件失败，使用默认数据', { file: this.filePath, error: error.message });
         return [...defaultData];
       }
     }
@@ -50,7 +51,7 @@ class JsonStore {
       fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf8');
       fs.renameSync(tmpFile, this.filePath);
     } catch (error) {
-      console.error(`保存 ${this.filePath} 失败:`, error.message);
+      logger.error('保存数据文件失败', { file: this.filePath, error: error.message });
       // 清理临时文件
       try { fs.unlinkSync(tmpFile); } catch (_) { /* ignore */ }
       throw error;

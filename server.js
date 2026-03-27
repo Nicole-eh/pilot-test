@@ -6,6 +6,12 @@ const fs = require('fs');
 const path = require('path');
 const JsonStore = require('./store');
 const auth = require('./auth');
+const { logger, httpLogger } = require('./lib/logger');
+const { ValidationError, NotFoundError, ConflictError } = require('./lib/errors');
+const { handleError, asyncHandler, registerGlobalHandlers } = require('./lib/error-handler');
+
+// 注册全局未捕获错误处理
+registerGlobalHandlers();
 
 /**
  * Node.js 应用 - HTTP 服务器 + RESTful API + JWT 认证
@@ -32,7 +38,7 @@ if (fs.existsSync(USERS_FILE)) {
     const data = fs.readFileSync(USERS_FILE, 'utf8');
     users = JSON.parse(data);
   } catch (error) {
-    console.error('读取用户数据失败，使用空数组:', error.message);
+    logger.error('读取用户数据失败，使用空数组', { error: error.message });
     users = [];
   }
 } else {
@@ -50,7 +56,7 @@ function saveUsers() {
   try {
     fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
   } catch (error) {
-    console.error('保存用户数据失败:', error.message);
+    logger.error('保存用户数据失败', { error: error.message });
   }
 }
 
@@ -67,7 +73,7 @@ function parseBody(req) {
       try {
         resolve(body ? JSON.parse(body) : {});
       } catch (error) {
-        reject(new Error('无效的 JSON 格式'));
+        reject(new ValidationError('无效的 JSON 格式'));
       }
     });
     req.on('error', reject);
@@ -169,11 +175,7 @@ function handleGetUsers(req, res) {
 function handleGetUser(req, res, id) {
   const user = users.find(u => u.id === parseInt(id));
   if (!user) {
-    sendJSON(res, 404, {
-      success: false,
-      message: `未找到 ID 为 ${id} 的用户`
-    });
-    return;
+    throw new NotFoundError('用户', id);
   }
   sendJSON(res, 200, {
     success: true,
@@ -183,100 +185,71 @@ function handleGetUser(req, res, id) {
 
 // POST /api/users - 创建新用户
 async function handleCreateUser(req, res) {
-  try {
-    const body = await parseBody(req);
+  const body = await parseBody(req);
 
-    // 验证必填字段
-    if (!body.name || !body.email) {
-      sendJSON(res, 400, {
-        success: false,
-        message: '缺少必填字段：name 和 email'
-      });
-      return;
-    }
-
-    // 检查邮箱是否已存在
-    if (users.find(u => u.email === body.email)) {
-      sendJSON(res, 400, {
-        success: false,
-        message: '该邮箱已被使用'
-      });
-      return;
-    }
-
-    // 创建新用户
-    const newUser = {
-      id: users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1,
-      name: body.name,
-      email: body.email,
-      age: body.age || 0,
-      createdAt: new Date().toISOString()
-    };
-
-    users.push(newUser);
-    saveUsers();
-
-    sendJSON(res, 201, {
-      success: true,
-      message: '用户创建成功',
-      data: newUser
-    });
-  } catch (error) {
-    sendJSON(res, 400, {
-      success: false,
-      message: error.message
-    });
+  // 验证必填字段
+  if (!body.name || !body.email) {
+    throw new ValidationError('缺少必填字段：name 和 email');
   }
+
+  // 检查邮箱是否已存在
+  if (users.find(u => u.email === body.email)) {
+    throw new ConflictError('该邮箱已被使用');
+  }
+
+  // 创建新用户
+  const newUser = {
+    id: users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1,
+    name: body.name,
+    email: body.email,
+    age: body.age || 0,
+    createdAt: new Date().toISOString()
+  };
+
+  users.push(newUser);
+  saveUsers();
+
+  sendJSON(res, 201, {
+    success: true,
+    message: '用户创建成功',
+    data: newUser
+  });
 }
 
 // PUT /api/users/:id - 更新用户
 async function handleUpdateUser(req, res, id) {
-  try {
-    const userId = parseInt(id);
-    const userIndex = users.findIndex(u => u.id === userId);
+  const userId = parseInt(id);
+  const userIndex = users.findIndex(u => u.id === userId);
 
-    if (userIndex === -1) {
-      sendJSON(res, 404, {
-        success: false,
-        message: `未找到 ID 为 ${id} 的用户`
-      });
-      return;
-    }
-
-    const body = await parseBody(req);
-    const updatedUser = {
-      ...users[userIndex],
-      name: body.name || users[userIndex].name,
-      email: body.email || users[userIndex].email,
-      age: body.age !== undefined ? body.age : users[userIndex].age,
-      updatedAt: new Date().toISOString()
-    };
-
-    // 检查邮箱是否被其他用户使用
-    if (body.email && body.email !== users[userIndex].email) {
-      if (users.find(u => u.email === body.email && u.id !== userId)) {
-        sendJSON(res, 400, {
-          success: false,
-          message: '该邮箱已被其他用户使用'
-        });
-        return;
-      }
-    }
-
-    users[userIndex] = updatedUser;
-    saveUsers();
-
-    sendJSON(res, 200, {
-      success: true,
-      message: '用户更新成功',
-      data: updatedUser
-    });
-  } catch (error) {
-    sendJSON(res, 400, {
-      success: false,
-      message: error.message
-    });
+  if (userIndex === -1) {
+    throw new NotFoundError('用户', id);
   }
+
+  const body = await parseBody(req);
+
+  // 检查邮箱是否被其他用户使用
+  if (body.email && body.email !== users[userIndex].email) {
+    if (users.find(u => u.email === body.email && u.id !== userId)) {
+      throw new ConflictError('该邮箱已被其他用户使用');
+    }
+  }
+
+  const updatedUser = {
+    ...users[userIndex],
+    name: body.name || users[userIndex].name,
+    email: body.email || users[userIndex].email,
+    age: body.age !== undefined ? body.age : users[userIndex].age,
+    updatedAt: new Date().toISOString()
+  };
+
+  users[userIndex] = updatedUser;
+  saveUsers();
+
+  sendJSON(res, 200, {
+    success: true,
+    message: '用户更新成功',
+    data: updatedUser
+  });
 }
 
 // DELETE /api/users/:id - 删除用户
@@ -285,11 +258,7 @@ function handleDeleteUser(req, res, id) {
   const userIndex = users.findIndex(u => u.id === userId);
 
   if (userIndex === -1) {
-    sendJSON(res, 404, {
-      success: false,
-      message: `未找到 ID 为 ${id} 的用户`
-    });
-    return;
+    throw new NotFoundError('用户', id);
   }
 
   const deletedUser = users.splice(userIndex, 1)[0];
@@ -335,76 +304,52 @@ function handleGetTodos(req, res) {
 function handleGetTodo(req, res, id) {
   const todo = todoStore.getById(id);
   if (!todo) {
-    sendJSON(res, 404, {
-      success: false,
-      message: `未找到 ID 为 ${id} 的待办事项`
-    });
-    return;
+    throw new NotFoundError('待办事项', id);
   }
   sendJSON(res, 200, { success: true, data: todo });
 }
 
 // POST /api/todos - 创建 TODO
 async function handleCreateTodo(req, res) {
-  try {
-    const body = await parseBody(req);
-    if (!body.text || !body.text.trim()) {
-      sendJSON(res, 400, {
-        success: false,
-        message: '缺少必填字段：text'
-      });
-      return;
-    }
-    const todo = todoStore.create({
-      text: body.text.trim(),
-      done: false
-    });
-    sendJSON(res, 201, {
-      success: true,
-      message: '待办事项创建成功',
-      data: todo
-    });
-  } catch (error) {
-    sendJSON(res, 400, { success: false, message: error.message });
+  const body = await parseBody(req);
+  if (!body.text || !body.text.trim()) {
+    throw new ValidationError('缺少必填字段：text');
   }
+  const todo = todoStore.create({
+    text: body.text.trim(),
+    done: false
+  });
+  sendJSON(res, 201, {
+    success: true,
+    message: '待办事项创建成功',
+    data: todo
+  });
 }
 
 // PUT /api/todos/:id - 更新 TODO
 async function handleUpdateTodo(req, res, id) {
-  try {
-    const existing = todoStore.getById(id);
-    if (!existing) {
-      sendJSON(res, 404, {
-        success: false,
-        message: `未找到 ID 为 ${id} 的待办事项`
-      });
-      return;
-    }
-    const body = await parseBody(req);
-    const updates = {};
-    if (body.text !== undefined) updates.text = body.text.trim();
-    if (body.done !== undefined) updates.done = Boolean(body.done);
-
-    const updated = todoStore.update(id, updates);
-    sendJSON(res, 200, {
-      success: true,
-      message: '待办事项更新成功',
-      data: updated
-    });
-  } catch (error) {
-    sendJSON(res, 400, { success: false, message: error.message });
+  const existing = todoStore.getById(id);
+  if (!existing) {
+    throw new NotFoundError('待办事项', id);
   }
+  const body = await parseBody(req);
+  const updates = {};
+  if (body.text !== undefined) updates.text = body.text.trim();
+  if (body.done !== undefined) updates.done = Boolean(body.done);
+
+  const updated = todoStore.update(id, updates);
+  sendJSON(res, 200, {
+    success: true,
+    message: '待办事项更新成功',
+    data: updated
+  });
 }
 
 // DELETE /api/todos/:id - 删除 TODO
 function handleDeleteTodo(req, res, id) {
   const deleted = todoStore.delete(id);
   if (!deleted) {
-    sendJSON(res, 404, {
-      success: false,
-      message: `未找到 ID 为 ${id} 的待办事项`
-    });
-    return;
+    throw new NotFoundError('待办事项', id);
   }
   sendJSON(res, 200, {
     success: true,
@@ -417,115 +362,78 @@ function handleDeleteTodo(req, res, id) {
 
 // POST /api/auth/register - 用户注册
 async function handleRegister(req, res) {
-  try {
-    const body = await parseBody(req);
-    const result = await auth.register(body.username, body.password, body.role);
-    sendJSON(res, result.status, {
-      success: result.success,
-      message: result.message,
-      data: result.data || undefined
-    });
-  } catch (error) {
-    sendJSON(res, 500, { success: false, message: error.message });
-  }
+  const body = await parseBody(req);
+  const data = await auth.register(body.username, body.password, body.role);
+  sendJSON(res, 201, {
+    success: true,
+    message: '注册成功',
+    data
+  });
 }
 
 // POST /api/auth/login - 用户登录
 async function handleLogin(req, res) {
-  try {
-    const body = await parseBody(req);
-    const result = await auth.login(body.username, body.password);
-    sendJSON(res, result.status, {
-      success: result.success,
-      message: result.message,
-      data: result.data || undefined
-    });
-  } catch (error) {
-    sendJSON(res, 500, { success: false, message: error.message });
-  }
+  const body = await parseBody(req);
+  const data = await auth.login(body.username, body.password);
+  sendJSON(res, 200, {
+    success: true,
+    message: '登录成功',
+    data
+  });
 }
 
 // POST /api/auth/refresh - 刷新 Token
 async function handleRefresh(req, res) {
-  try {
-    const body = await parseBody(req);
-    const result = auth.refresh(body.refreshToken);
-    sendJSON(res, result.status, {
-      success: result.success,
-      message: result.message,
-      data: result.data || undefined
-    });
-  } catch (error) {
-    sendJSON(res, 500, { success: false, message: error.message });
-  }
+  const body = await parseBody(req);
+  const data = auth.refresh(body.refreshToken);
+  sendJSON(res, 200, {
+    success: true,
+    message: 'Token 刷新成功',
+    data
+  });
 }
 
 // POST /api/auth/logout - 退出登录
 async function handleLogout(req, res) {
-  try {
-    const body = await parseBody(req);
-    const result = auth.logout(body.refreshToken);
-    sendJSON(res, result.status, {
-      success: result.success,
-      message: result.message
-    });
-  } catch (error) {
-    sendJSON(res, 500, { success: false, message: error.message });
-  }
+  const body = await parseBody(req);
+  auth.logout(body.refreshToken);
+  sendJSON(res, 200, {
+    success: true,
+    message: '已退出登录，Token 已撤销'
+  });
 }
 
 // GET /api/auth/profile - 获取当前用户信息（需认证）
 function handleGetProfile(req, res) {
-  const authResult = auth.authenticate(req);
-  if (!authResult.authenticated) {
-    sendJSON(res, 401, { success: false, message: authResult.error });
-    return;
-  }
-  const result = auth.getProfile(authResult.user.id);
-  sendJSON(res, result.status, {
-    success: result.success,
-    data: result.data || undefined,
-    message: result.message || undefined
+  const user = auth.authenticate(req);
+  const data = auth.getProfile(user.id);
+  sendJSON(res, 200, {
+    success: true,
+    data
   });
 }
 
 // GET /api/auth/accounts - 获取所有账号（仅 admin）
 function handleGetAccounts(req, res) {
-  const authResult = auth.authenticate(req);
-  if (!authResult.authenticated) {
-    sendJSON(res, 401, { success: false, message: authResult.error });
-    return;
-  }
-  const authzResult = auth.authorize(authResult.user, 'admin');
-  if (!authzResult.authorized) {
-    sendJSON(res, 403, { success: false, message: authzResult.error });
-    return;
-  }
-  const result = auth.getAllAccounts();
-  sendJSON(res, result.status, {
-    success: result.success,
-    count: result.data ? result.data.length : 0,
-    data: result.data
+  const user = auth.authenticate(req);
+  auth.authorize(user, 'admin');
+  const data = auth.getAllAccounts();
+  sendJSON(res, 200, {
+    success: true,
+    count: data.length,
+    data
   });
 }
 
 // DELETE /api/auth/accounts/:id - 删除账号（仅 admin）
 function handleDeleteAccount(req, res, id) {
-  const authResult = auth.authenticate(req);
-  if (!authResult.authenticated) {
-    sendJSON(res, 401, { success: false, message: authResult.error });
-    return;
-  }
-  const authzResult = auth.authorize(authResult.user, 'admin');
-  if (!authzResult.authorized) {
-    sendJSON(res, 403, { success: false, message: authzResult.error });
-    return;
-  }
-  const result = auth.deleteAccount(id, authResult.user.id);
-  sendJSON(res, result.status, {
-    success: result.success,
-    message: result.message,
-    data: result.data || undefined
+  const user = auth.authenticate(req);
+  auth.authorize(user, 'admin');
+  const data = auth.deleteAccount(id, user.id);
+  sendJSON(res, 200, {
+    success: true,
+    message: '账号已删除',
+    data
   });
 }
 
@@ -850,7 +758,8 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname;
   const method = req.method;
 
-  console.log(`[${new Date().toLocaleTimeString('zh-CN')}] ${method} ${pathname}`);
+  // HTTP 请求日志：自动记录 method、path、status、耗时
+  const requestId = httpLogger(req, res);
 
   // 处理 CORS 预检请求
   if (method === 'OPTIONS') {
@@ -994,11 +903,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       // API 404
-      sendJSON(res, 404, {
-        success: false,
-        message: '未找到该 API 端点'
-      });
-      return;
+      throw new NotFoundError('API 端点');
     }
 
     // 其他请求 404
@@ -1012,12 +917,7 @@ const server = http.createServer(async (req, res) => {
       </html>
     `);
   } catch (error) {
-    console.error('服务器错误:', error);
-    sendJSON(res, 500, {
-      success: false,
-      message: '服务器内部错误',
-      error: error.message
-    });
+    handleError(error, req, res);
   }
 });
 
@@ -1026,36 +926,28 @@ const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0';
 
 server.listen(PORT, HOST, () => {
-  console.log(`
-╔═══════════════════════════════════════════════════════╗
-║                                                       ║
-║   🚀 Node.js HTTP 服务器已启动！                     ║
-║                                                       ║
-║   📍 地址: http://localhost:${PORT}                      ║
-║   📊 API:  http://localhost:${PORT}/api/users            ║
-║                                                       ║
-║   按 Ctrl+C 停止服务器                                ║
-║                                                       ║
-╚═══════════════════════════════════════════════════════╝
-  `);
-  console.log(`✅ 服务器运行在 http://localhost:${PORT}`);
-  console.log(`📁 数据文件: ${USERS_FILE}`);
-  console.log(`👥 当前用户数: ${users.length}\n`);
+  logger.info('Node.js HTTP 服务器已启动', {
+    address: `http://localhost:${PORT}`,
+    api: `http://localhost:${PORT}/api/users`,
+    dataFile: USERS_FILE,
+    userCount: users.length,
+    logLevel: process.env.LOG_LEVEL || 'http'
+  });
 });
 
 // 优雅关闭
 process.on('SIGTERM', () => {
-  console.log('\n⏹  收到 SIGTERM 信号，正在关闭服务器...');
+  logger.info('收到 SIGTERM 信号，正在关闭服务器...');
   server.close(() => {
-    console.log('✅ 服务器已关闭');
+    logger.info('服务器已关闭');
     process.exit(0);
   });
 });
 
 process.on('SIGINT', () => {
-  console.log('\n\n⏹  收到 SIGINT 信号，正在关闭服务器...');
+  logger.info('收到 SIGINT 信号，正在关闭服务器...');
   server.close(() => {
-    console.log('✅ 服务器已关闭');
+    logger.info('服务器已关闭');
     process.exit(0);
   });
 });
