@@ -5,6 +5,13 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const JsonStore = require('./store');
 const path = require('path');
+const {
+  ValidationError,
+  AuthenticationError,
+  AuthorizationError,
+  NotFoundError,
+  ConflictError
+} = require('./lib/errors');
 
 /**
  * JWT 认证模块
@@ -152,60 +159,67 @@ function extractToken(req) {
 
 /**
  * 鉴权中间件：验证请求是否携带有效的 Access Token
- * 成功后将用户信息挂载到 req.user
+ * 成功返回用户信息，失败直接抛出 AuthenticationError
+ *
+ * @param {http.IncomingMessage} req
+ * @returns {object} 解码后的用户信息 { id, username, role }
+ * @throws {AuthenticationError}
  */
 function authenticate(req) {
   const token = extractToken(req);
   if (!token) {
-    return { authenticated: false, error: '未提供认证 Token，请在 Header 中添加: Authorization: Bearer <token>' };
+    throw new AuthenticationError('未提供认证 Token，请在 Header 中添加: Authorization: Bearer <token>');
   }
 
   const result = verifyAccessToken(token);
   if (!result.valid) {
-    return { authenticated: false, error: result.error };
+    throw new AuthenticationError(result.error);
   }
 
-  return { authenticated: true, user: result.decoded };
+  return result.decoded;
 }
 
 /**
  * 角色授权检查：验证用户是否具有指定角色
+ * 失败直接抛出 AuthorizationError
+ *
  * @param {object} user - 从 Token 解析出的用户信息
  * @param  {...string} allowedRoles - 允许的角色列表
+ * @throws {AuthorizationError}
  */
 function authorize(user, ...allowedRoles) {
   if (!allowedRoles.includes(user.role)) {
-    return {
-      authorized: false,
-      error: `权限不足：需要 [${allowedRoles.join(', ')}] 角色，当前角色为 [${user.role}]`
-    };
+    throw new AuthorizationError(
+      `权限不足：需要 [${allowedRoles.join(', ')}] 角色，当前角色为 [${user.role}]`
+    );
   }
-  return { authorized: true };
 }
 
 // ==================== 业务逻辑 ====================
 
 /**
  * 用户注册
+ * @throws {ValidationError} 参数不合法
+ * @throws {ConflictError} 用户名已存在
  */
 async function register(username, password, role) {
   // 验证输入
   if (!username || !password) {
-    return { success: false, status: 400, message: '用户名和密码为必填项' };
+    throw new ValidationError('用户名和密码为必填项');
   }
 
   if (username.length < 3 || username.length > 20) {
-    return { success: false, status: 400, message: '用户名长度需在 3-20 个字符之间' };
+    throw new ValidationError('用户名长度需在 3-20 个字符之间');
   }
 
   if (password.length < 6) {
-    return { success: false, status: 400, message: '密码长度不能少于 6 个字符' };
+    throw new ValidationError('密码长度不能少于 6 个字符');
   }
 
   // 检查用户名是否已存在
   const existing = accountStore.getAll().find(a => a.username === username);
   if (existing) {
-    return { success: false, status: 409, message: '该用户名已被注册' };
+    throw new ConflictError('该用户名已被注册');
   }
 
   // 确定角色（只允许 admin 和 user）
@@ -222,29 +236,29 @@ async function register(username, password, role) {
   });
 
   // 返回时不暴露密码
-  const safeAccount = { id: account.id, username: account.username, role: account.role, createdAt: account.createdAt };
-
-  return { success: true, status: 201, message: '注册成功', data: safeAccount };
+  return { id: account.id, username: account.username, role: account.role, createdAt: account.createdAt };
 }
 
 /**
  * 用户登录
+ * @throws {ValidationError} 缺少参数
+ * @throws {AuthenticationError} 用户名或密码错误
  */
 async function login(username, password) {
   if (!username || !password) {
-    return { success: false, status: 400, message: '用户名和密码为必填项' };
+    throw new ValidationError('用户名和密码为必填项');
   }
 
   // 查找用户
   const account = accountStore.getAll().find(a => a.username === username);
   if (!account) {
-    return { success: false, status: 401, message: '用户名或密码错误' };
+    throw new AuthenticationError('用户名或密码错误');
   }
 
   // 验证密码
   const isMatch = await comparePassword(password, account.password);
   if (!isMatch) {
-    return { success: false, status: 401, message: '用户名或密码错误' };
+    throw new AuthenticationError('用户名或密码错误');
   }
 
   // 签发双 Token
@@ -252,35 +266,32 @@ async function login(username, password) {
   const refreshToken = generateRefreshToken(account);
 
   return {
-    success: true,
-    status: 200,
-    message: '登录成功',
-    data: {
-      user: { id: account.id, username: account.username, role: account.role },
-      accessToken,
-      refreshToken,
-      expiresIn: CONFIG.ACCESS_TOKEN_EXPIRES
-    }
+    user: { id: account.id, username: account.username, role: account.role },
+    accessToken,
+    refreshToken,
+    expiresIn: CONFIG.ACCESS_TOKEN_EXPIRES
   };
 }
 
 /**
  * 刷新 Access Token
+ * @throws {ValidationError} 缺少 Refresh Token
+ * @throws {AuthenticationError} Token 无效或用户不存在
  */
 function refresh(refreshToken) {
   if (!refreshToken) {
-    return { success: false, status: 400, message: '请提供 Refresh Token' };
+    throw new ValidationError('请提供 Refresh Token');
   }
 
   const result = verifyRefreshToken(refreshToken);
   if (!result.valid) {
-    return { success: false, status: 401, message: result.error };
+    throw new AuthenticationError(result.error);
   }
 
   // 查找用户（确保用户仍然存在）
   const account = accountStore.getById(result.decoded.id);
   if (!account) {
-    return { success: false, status: 401, message: '用户不存在' };
+    throw new AuthenticationError('用户不存在');
   }
 
   // 撤销旧的 Refresh Token
@@ -291,14 +302,9 @@ function refresh(refreshToken) {
   const newRefreshToken = generateRefreshToken(account);
 
   return {
-    success: true,
-    status: 200,
-    message: 'Token 刷新成功',
-    data: {
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
-      expiresIn: CONFIG.ACCESS_TOKEN_EXPIRES
-    }
+    accessToken: newAccessToken,
+    refreshToken: newRefreshToken,
+    expiresIn: CONFIG.ACCESS_TOKEN_EXPIRES
   };
 }
 
@@ -324,21 +330,18 @@ function logout(refreshToken) {
 
 /**
  * 获取当前用户信息（需已认证）
+ * @throws {NotFoundError} 用户不存在
  */
 function getProfile(userId) {
   const account = accountStore.getById(userId);
   if (!account) {
-    return { success: false, status: 404, message: '用户不存在' };
+    throw new NotFoundError('用户', userId);
   }
   return {
-    success: true,
-    status: 200,
-    data: {
-      id: account.id,
-      username: account.username,
-      role: account.role,
-      createdAt: account.createdAt
-    }
+    id: account.id,
+    username: account.username,
+    role: account.role,
+    createdAt: account.createdAt
   };
 }
 
@@ -346,32 +349,28 @@ function getProfile(userId) {
  * 获取所有账号列表（仅 admin）
  */
 function getAllAccounts() {
-  const accounts = accountStore.getAll().map(a => ({
+  return accountStore.getAll().map(a => ({
     id: a.id,
     username: a.username,
     role: a.role,
     createdAt: a.createdAt
   }));
-  return { success: true, status: 200, data: accounts };
 }
 
 /**
  * 删除账号（仅 admin）
+ * @throws {ValidationError} 不能删除自己
+ * @throws {NotFoundError} 账号不存在
  */
 function deleteAccount(targetId, currentUserId) {
   if (parseInt(targetId) === currentUserId) {
-    return { success: false, status: 400, message: '不能删除自己的账号' };
+    throw new ValidationError('不能删除自己的账号');
   }
   const deleted = accountStore.delete(targetId);
   if (!deleted) {
-    return { success: false, status: 404, message: '账号不存在' };
+    throw new NotFoundError('账号', targetId);
   }
-  return {
-    success: true,
-    status: 200,
-    message: '账号已删除',
-    data: { id: deleted.id, username: deleted.username }
-  };
+  return { id: deleted.id, username: deleted.username };
 }
 
 // ==================== 导出 ====================
