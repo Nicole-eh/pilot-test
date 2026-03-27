@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const JsonStore = require('./store');
 const auth = require('./auth');
+const { logger, httpLogger } = require('./lib/logger');
 
 /**
  * Node.js 应用 - HTTP 服务器 + RESTful API + JWT 认证
@@ -32,7 +33,7 @@ if (fs.existsSync(USERS_FILE)) {
     const data = fs.readFileSync(USERS_FILE, 'utf8');
     users = JSON.parse(data);
   } catch (error) {
-    console.error('读取用户数据失败，使用空数组:', error.message);
+    logger.error('读取用户数据失败，使用空数组', { error: error.message });
     users = [];
   }
 } else {
@@ -50,7 +51,7 @@ function saveUsers() {
   try {
     fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
   } catch (error) {
-    console.error('保存用户数据失败:', error.message);
+    logger.error('保存用户数据失败', { error: error.message });
   }
 }
 
@@ -850,7 +851,8 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname;
   const method = req.method;
 
-  console.log(`[${new Date().toLocaleTimeString('zh-CN')}] ${method} ${pathname}`);
+  // HTTP 请求日志：自动记录 method、path、status、耗时
+  const requestId = httpLogger(req, res);
 
   // 处理 CORS 预检请求
   if (method === 'OPTIONS') {
@@ -1012,7 +1014,7 @@ const server = http.createServer(async (req, res) => {
       </html>
     `);
   } catch (error) {
-    console.error('服务器错误:', error);
+    logger.error('服务器内部错误', { requestId, error: error.message, stack: error.stack });
     sendJSON(res, 500, {
       success: false,
       message: '服务器内部错误',
@@ -1026,36 +1028,28 @@ const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0';
 
 server.listen(PORT, HOST, () => {
-  console.log(`
-╔═══════════════════════════════════════════════════════╗
-║                                                       ║
-║   🚀 Node.js HTTP 服务器已启动！                     ║
-║                                                       ║
-║   📍 地址: http://localhost:${PORT}                      ║
-║   📊 API:  http://localhost:${PORT}/api/users            ║
-║                                                       ║
-║   按 Ctrl+C 停止服务器                                ║
-║                                                       ║
-╚═══════════════════════════════════════════════════════╝
-  `);
-  console.log(`✅ 服务器运行在 http://localhost:${PORT}`);
-  console.log(`📁 数据文件: ${USERS_FILE}`);
-  console.log(`👥 当前用户数: ${users.length}\n`);
+  logger.info('Node.js HTTP 服务器已启动', {
+    address: `http://localhost:${PORT}`,
+    api: `http://localhost:${PORT}/api/users`,
+    dataFile: USERS_FILE,
+    userCount: users.length,
+    logLevel: process.env.LOG_LEVEL || 'http'
+  });
 });
 
 // 优雅关闭
 process.on('SIGTERM', () => {
-  console.log('\n⏹  收到 SIGTERM 信号，正在关闭服务器...');
+  logger.info('收到 SIGTERM 信号，正在关闭服务器...');
   server.close(() => {
-    console.log('✅ 服务器已关闭');
+    logger.info('服务器已关闭');
     process.exit(0);
   });
 });
 
 process.on('SIGINT', () => {
-  console.log('\n\n⏹  收到 SIGINT 信号，正在关闭服务器...');
+  logger.info('收到 SIGINT 信号，正在关闭服务器...');
   server.close(() => {
-    console.log('✅ 服务器已关闭');
+    logger.info('服务器已关闭');
     process.exit(0);
   });
 });

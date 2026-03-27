@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const JsonStore = require('./store');
+const { logger } = require('./lib/logger');
 
 /**
  * 初级功能 Node.js 应用
@@ -31,8 +32,10 @@ function writeLog(message) {
 
   try {
     fs.appendFileSync(LOG_FILE, logEntry, 'utf8');
+    logger.debug('日志已写入文件', { file: LOG_FILE });
     console.log('✓ 日志已保存到 log.txt');
   } catch (error) {
+    logger.error('保存日志文件失败', { file: LOG_FILE, error: error.message });
     console.error('✗ 保存日志失败:', error.message);
   }
 }
@@ -49,6 +52,7 @@ function readLog() {
     console.log(logs);
     console.log('─────────────────────────────────────');
   } catch (error) {
+    logger.error('读取日志文件失败', { file: LOG_FILE, error: error.message });
     console.error('✗ 读取日志失败:', error.message);
   }
 }
