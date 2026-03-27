@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const JsonStore = require('./store');
 const auth = require('./auth');
+const { validate, schemas } = require('./validator');
 
 /**
  * Node.js 应用 - HTTP 服务器 + RESTful API + JWT 认证
@@ -186,17 +187,19 @@ async function handleCreateUser(req, res) {
   try {
     const body = await parseBody(req);
 
-    // 验证必填字段
-    if (!body.name || !body.email) {
+    // 使用 validator 校验请求参数
+    const { valid, errors, cleaned } = validate(body, schemas.createUser);
+    if (!valid) {
       sendJSON(res, 400, {
         success: false,
-        message: '缺少必填字段：name 和 email'
+        message: '参数校验失败',
+        errors
       });
       return;
     }
 
     // 检查邮箱是否已存在
-    if (users.find(u => u.email === body.email)) {
+    if (users.find(u => u.email === cleaned.email)) {
       sendJSON(res, 400, {
         success: false,
         message: '该邮箱已被使用'
@@ -207,9 +210,9 @@ async function handleCreateUser(req, res) {
     // 创建新用户
     const newUser = {
       id: users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1,
-      name: body.name,
-      email: body.email,
-      age: body.age || 0,
+      name: cleaned.name,
+      email: cleaned.email,
+      age: cleaned.age !== undefined ? cleaned.age : 0,
       createdAt: new Date().toISOString()
     };
 
@@ -244,17 +247,21 @@ async function handleUpdateUser(req, res, id) {
     }
 
     const body = await parseBody(req);
-    const updatedUser = {
-      ...users[userIndex],
-      name: body.name || users[userIndex].name,
-      email: body.email || users[userIndex].email,
-      age: body.age !== undefined ? body.age : users[userIndex].age,
-      updatedAt: new Date().toISOString()
-    };
+
+    // 使用 validator 校验请求参数（更新时字段均为可选）
+    const { valid, errors, cleaned } = validate(body, schemas.updateUser);
+    if (!valid) {
+      sendJSON(res, 400, {
+        success: false,
+        message: '参数校验失败',
+        errors
+      });
+      return;
+    }
 
     // 检查邮箱是否被其他用户使用
-    if (body.email && body.email !== users[userIndex].email) {
-      if (users.find(u => u.email === body.email && u.id !== userId)) {
+    if (cleaned.email && cleaned.email !== users[userIndex].email) {
+      if (users.find(u => u.email === cleaned.email && u.id !== userId)) {
         sendJSON(res, 400, {
           success: false,
           message: '该邮箱已被其他用户使用'
@@ -262,6 +269,14 @@ async function handleUpdateUser(req, res, id) {
         return;
       }
     }
+
+    const updatedUser = {
+      ...users[userIndex],
+      name: cleaned.name || users[userIndex].name,
+      email: cleaned.email || users[userIndex].email,
+      age: cleaned.age !== undefined ? cleaned.age : users[userIndex].age,
+      updatedAt: new Date().toISOString()
+    };
 
     users[userIndex] = updatedUser;
     saveUsers();
@@ -348,15 +363,20 @@ function handleGetTodo(req, res, id) {
 async function handleCreateTodo(req, res) {
   try {
     const body = await parseBody(req);
-    if (!body.text || !body.text.trim()) {
+
+    // 使用 validator 校验请求参数
+    const { valid, errors, cleaned } = validate(body, schemas.createTodo);
+    if (!valid) {
       sendJSON(res, 400, {
         success: false,
-        message: '缺少必填字段：text'
+        message: '参数校验失败',
+        errors
       });
       return;
     }
+
     const todo = todoStore.create({
-      text: body.text.trim(),
+      text: cleaned.text,
       done: false
     });
     sendJSON(res, 201, {
@@ -381,9 +401,21 @@ async function handleUpdateTodo(req, res, id) {
       return;
     }
     const body = await parseBody(req);
+
+    // 使用 validator 校验请求参数（更新时字段均为可选）
+    const { valid, errors, cleaned } = validate(body, schemas.updateTodo);
+    if (!valid) {
+      sendJSON(res, 400, {
+        success: false,
+        message: '参数校验失败',
+        errors
+      });
+      return;
+    }
+
     const updates = {};
-    if (body.text !== undefined) updates.text = body.text.trim();
-    if (body.done !== undefined) updates.done = Boolean(body.done);
+    if (cleaned.text !== undefined) updates.text = cleaned.text;
+    if (cleaned.done !== undefined) updates.done = cleaned.done;
 
     const updated = todoStore.update(id, updates);
     sendJSON(res, 200, {
@@ -419,7 +451,19 @@ function handleDeleteTodo(req, res, id) {
 async function handleRegister(req, res) {
   try {
     const body = await parseBody(req);
-    const result = await auth.register(body.username, body.password, body.role);
+
+    // 使用 validator 校验注册参数
+    const { valid, errors, cleaned } = validate(body, schemas.register);
+    if (!valid) {
+      sendJSON(res, 400, {
+        success: false,
+        message: '参数校验失败',
+        errors
+      });
+      return;
+    }
+
+    const result = await auth.register(cleaned.username, cleaned.password, cleaned.role);
     sendJSON(res, result.status, {
       success: result.success,
       message: result.message,
@@ -434,7 +478,19 @@ async function handleRegister(req, res) {
 async function handleLogin(req, res) {
   try {
     const body = await parseBody(req);
-    const result = await auth.login(body.username, body.password);
+
+    // 使用 validator 校验登录参数
+    const { valid, errors, cleaned } = validate(body, schemas.login);
+    if (!valid) {
+      sendJSON(res, 400, {
+        success: false,
+        message: '参数校验失败',
+        errors
+      });
+      return;
+    }
+
+    const result = await auth.login(cleaned.username, cleaned.password);
     sendJSON(res, result.status, {
       success: result.success,
       message: result.message,
@@ -449,7 +505,19 @@ async function handleLogin(req, res) {
 async function handleRefresh(req, res) {
   try {
     const body = await parseBody(req);
-    const result = auth.refresh(body.refreshToken);
+
+    // 使用 validator 校验刷新参数
+    const { valid, errors, cleaned } = validate(body, schemas.refreshToken);
+    if (!valid) {
+      sendJSON(res, 400, {
+        success: false,
+        message: '参数校验失败',
+        errors
+      });
+      return;
+    }
+
+    const result = auth.refresh(cleaned.refreshToken);
     sendJSON(res, result.status, {
       success: result.success,
       message: result.message,
