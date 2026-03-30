@@ -55,6 +55,104 @@ function saveUsers() {
   }
 }
 
+// ==================== 查询工具（分页/排序/搜索） ====================
+
+/**
+ * 从 URL query 参数中解析分页、排序、搜索选项
+ * 支持参数：
+ *   - page:    页码，从 1 开始，默认 1
+ *   - limit:   每页条数，默认 10，最大 100
+ *   - sort:    排序字段名，如 name, age, createdAt
+ *   - order:   排序方向，asc 或 desc，默认 asc
+ *   - search:  搜索关键字，在指定的文本字段中模糊匹配
+ */
+function parseQueryOptions(queryParams) {
+  const page = Math.max(1, parseInt(queryParams.page) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(queryParams.limit) || 10));
+  const sort = queryParams.sort || null;
+  const order = (queryParams.order || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc';
+  const search = (queryParams.search || '').trim();
+
+  return { page, limit, sort, order, search };
+}
+
+/**
+ * 通用查询引擎：对数组数据执行搜索 → 排序 → 分页
+ * @param {Array} data         - 原始数据数组
+ * @param {object} options     - { page, limit, sort, order, search }
+ * @param {string[]} searchFields - 参与搜索的字段名列表
+ * @returns {{ data, pagination }}
+ */
+function applyQuery(data, options, searchFields = []) {
+  let result = [...data];
+
+  // ---- 1. 搜索过滤 ----
+  if (options.search && searchFields.length > 0) {
+    const keyword = options.search.toLowerCase();
+    result = result.filter(item =>
+      searchFields.some(field => {
+        const value = item[field];
+        if (value === null || value === undefined) return false;
+        return String(value).toLowerCase().includes(keyword);
+      })
+    );
+  }
+
+  // 过滤后的总数（排序/分页前）
+  const totalFiltered = result.length;
+
+  // ---- 2. 排序 ----
+  if (options.sort) {
+    const sortField = options.sort;
+    const sortDir = options.order === 'desc' ? -1 : 1;
+
+    result.sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+
+      // 处理字段不存在的情况
+      if (valA === undefined) valA = null;
+      if (valB === undefined) valB = null;
+
+      // null 值排到最后
+      if (valA === null && valB === null) return 0;
+      if (valA === null) return 1;
+      if (valB === null) return -1;
+
+      // 数字比较
+      if (typeof valA === 'number' && typeof valB === 'number') {
+        return (valA - valB) * sortDir;
+      }
+
+      // 布尔比较
+      if (typeof valA === 'boolean' && typeof valB === 'boolean') {
+        return ((valA === valB) ? 0 : valA ? 1 : -1) * sortDir;
+      }
+
+      // 字符串比较（支持中文排序）
+      return String(valA).localeCompare(String(valB), 'zh-CN') * sortDir;
+    });
+  }
+
+  // ---- 3. 分页 ----
+  const totalPages = Math.ceil(totalFiltered / options.limit) || 1;
+  const currentPage = Math.min(options.page, totalPages);
+  const startIndex = (currentPage - 1) * options.limit;
+  const paginatedData = result.slice(startIndex, startIndex + options.limit);
+
+  return {
+    data: paginatedData,
+    pagination: {
+      currentPage,
+      limit: options.limit,
+      totalItems: totalFiltered,
+      totalPages,
+      hasNextPage: currentPage < totalPages,
+      hasPrevPage: currentPage > 1
+    }
+  };
+}
+
 // ==================== 工具函数 ====================
 
 // 解析 JSON 请求体
@@ -157,12 +255,23 @@ function getStatistics() {
 
 // ==================== API 路由处理 ====================
 
-// GET /api/users - 获取所有用户
+// GET /api/users - 获取所有用户（支持分页/排序/搜索）
+// 查询参数：
+//   page=1&limit=10          分页
+//   sort=age&order=desc      排序
+//   search=张                搜索（匹配 name 和 email）
 function handleGetUsers(req, res) {
+  const parsedUrl = url.parse(req.url, true);
+  const options = parseQueryOptions(parsedUrl.query);
+  const searchFields = ['name', 'email'];
+
+  const result = applyQuery(users, options, searchFields);
+
   sendJSON(res, 200, {
     success: true,
-    count: users.length,
-    data: users
+    count: result.data.length,
+    pagination: result.pagination,
+    data: result.data
   });
 }
 
@@ -322,13 +431,24 @@ function handleGetStats(req, res) {
 const TODOS_FILE = path.join(DATA_DIR, 'todos.json');
 const todoStore = new JsonStore(TODOS_FILE);
 
-// GET /api/todos - 获取所有 TODO
+// GET /api/todos - 获取所有 TODO（支持分页/排序/搜索）
+// 查询参数：
+//   page=1&limit=10          分页
+//   sort=createdAt&order=desc 排序（支持 text, done, createdAt）
+//   search=学习              搜索（匹配 text）
 function handleGetTodos(req, res) {
+  const parsedUrl = url.parse(req.url, true);
+  const options = parseQueryOptions(parsedUrl.query);
+  const searchFields = ['text'];
+
   const todos = todoStore.getAll();
+  const result = applyQuery(todos, options, searchFields);
+
   sendJSON(res, 200, {
     success: true,
-    count: todos.length,
-    data: todos
+    count: result.data.length,
+    pagination: result.pagination,
+    data: result.data
   });
 }
 
@@ -490,7 +610,11 @@ function handleGetProfile(req, res) {
   });
 }
 
-// GET /api/auth/accounts - 获取所有账号（仅 admin）
+// GET /api/auth/accounts - 获取所有账号（仅 admin，支持分页/排序/搜索）
+// 查询参数：
+//   page=1&limit=10              分页
+//   sort=createdAt&order=desc    排序（支持 username, role, createdAt）
+//   search=admin                 搜索（匹配 username 和 role）
 function handleGetAccounts(req, res) {
   const authResult = auth.authenticate(req);
   if (!authResult.authenticated) {
@@ -502,11 +626,19 @@ function handleGetAccounts(req, res) {
     sendJSON(res, 403, { success: false, message: authzResult.error });
     return;
   }
-  const result = auth.getAllAccounts();
-  sendJSON(res, result.status, {
-    success: result.success,
-    count: result.data ? result.data.length : 0,
-    data: result.data
+
+  const parsedUrl = url.parse(req.url, true);
+  const options = parseQueryOptions(parsedUrl.query);
+  const searchFields = ['username', 'role'];
+
+  const accountResult = auth.getAllAccounts();
+  const queryResult = applyQuery(accountResult.data || [], options, searchFields);
+
+  sendJSON(res, accountResult.status, {
+    success: accountResult.success,
+    count: queryResult.data.length,
+    pagination: queryResult.pagination,
+    data: queryResult.data
   });
 }
 
@@ -693,8 +825,8 @@ function getHomePage() {
       <ul class="api-list">
         <li class="api-item">
           <span class="method get">GET</span>
-          <span class="endpoint">/api/users</span>
-          <span class="description">获取所有用户</span>
+          <span class="endpoint">/api/users?page=1&limit=10&sort=age&order=desc&search=张</span>
+          <span class="description">获取用户（分页/排序/搜索）</span>
         </li>
         <li class="api-item">
           <span class="method get">GET</span>
@@ -732,8 +864,8 @@ function getHomePage() {
       <ul class="api-list">
         <li class="api-item">
           <span class="method get">GET</span>
-          <span class="endpoint">/api/todos</span>
-          <span class="description">获取所有待办</span>
+          <span class="endpoint">/api/todos?page=1&limit=10&sort=createdAt&order=desc&search=学习</span>
+          <span class="description">获取待办（分页/排序/搜索）</span>
         </li>
         <li class="api-item">
           <span class="method get">GET</span>
@@ -803,6 +935,40 @@ function getHomePage() {
     </div>
 
     <div class="section">
+      <h2>🔍 分页/排序/搜索</h2>
+      <p style="margin-bottom: 15px;">列表接口均支持以下查询参数：</p>
+      <div style="background: white; padding: 15px; border-radius: 8px;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.95em;">
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:8px;"><code>page</code></td>
+            <td style="padding:8px;">页码，从 1 开始（默认 1）</td>
+          </tr>
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:8px;"><code>limit</code></td>
+            <td style="padding:8px;">每页条数，1-100（默认 10）</td>
+          </tr>
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:8px;"><code>sort</code></td>
+            <td style="padding:8px;">排序字段，如 name, age, createdAt</td>
+          </tr>
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:8px;"><code>order</code></td>
+            <td style="padding:8px;">排序方向：asc（升序）或 desc（降序）</td>
+          </tr>
+          <tr>
+            <td style="padding:8px;"><code>search</code></td>
+            <td style="padding:8px;">关键字搜索（模糊匹配文本字段）</td>
+          </tr>
+        </table>
+      </div>
+      <div style="margin-top: 15px;">
+        <a href="/api/users?page=1&limit=2" class="button">分页: 每页2条</a>
+        <a href="/api/users?sort=age&order=desc" class="button">按年龄倒序</a>
+        <a href="/api/users?search=张" class="button">搜索"张"</a>
+      </div>
+    </div>
+
+    <div class="section">
       <h2>🧪 快速测试</h2>
       <p style="margin-bottom: 15px;">使用以下命令测试 API：</p>
       <div style="background: white; padding: 15px; border-radius: 8px;">
@@ -814,6 +980,9 @@ function getHomePage() {
         <br><br>
         <p><strong>3. 用 Token 访问受保护接口：</strong></p>
         <code>curl http://localhost:3000/api/auth/profile -H "Authorization: Bearer &lt;你的token&gt;"</code>
+        <br><br>
+        <p><strong>4. 分页 + 排序 + 搜索：</strong></p>
+        <code>curl "http://localhost:3000/api/users?page=1&amp;limit=2&amp;sort=age&amp;order=desc&amp;search=张"</code>
       </div>
       <div style="margin-top: 15px;">
         <a href="/api/users" class="button">查看用户数据</a>
