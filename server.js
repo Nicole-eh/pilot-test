@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const JsonStore = require('./store');
 const auth = require('./auth');
+const logger = require('./logger');
 
 /**
  * Node.js 应用 - HTTP 服务器 + RESTful API + JWT 认证
@@ -850,7 +851,11 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname;
   const method = req.method;
 
-  console.log(`[${new Date().toLocaleTimeString('zh-CN')}] ${method} ${pathname}`);
+  // 请求日志中间件 — 标记开始时间，响应结束时自动记录
+  logger.start(req);
+  res.on('finish', () => {
+    logger.end(req, res);
+  });
 
   // 处理 CORS 预检请求
   if (method === 'OPTIONS') {
@@ -1012,7 +1017,7 @@ const server = http.createServer(async (req, res) => {
       </html>
     `);
   } catch (error) {
-    console.error('服务器错误:', error);
+    logger.error(error, req);
     sendJSON(res, 500, {
       success: false,
       message: '服务器内部错误',
