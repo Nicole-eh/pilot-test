@@ -12,5 +12,26 @@
     "password": "$2b$10$MrBuwGSDNm07pB7kjjWqSuqq7R46YDbUw8OKkZ4DP1ZHuSrAppz.a",
     "role": "admin",
     "createdAt": "2026-03-26T09:11:12.887Z"
+  },
+  {
+    "id": 3,
+    "username": "debuguser1",
+    "password": "$2b$10$T6CcbH1b2mAnZvMHbxDiQupsOjTTR2Gggx6Uz1SciMG4VYPZpO2vK",
+    "role": "user",
+    "createdAt": "2026-03-30T09:38:30.342Z"
+  },
+  {
+    "id": 4,
+    "username": "tu_mnczzkzm",
+    "password": "$2b$10$Rb.sD0Wae3wsyej9vCOfU.F8xF2g7Meo4WtwLXzgEKpONf8RVfCvq",
+    "role": "user",
+    "createdAt": "2026-03-30T09:40:44.839Z"
+  },
+  {
+    "id": 5,
+    "username": "tu_mnd002j5",
+    "password": "$2b$10$HBFyRt8yLURYLGlZLhdq4eb.dRgpB1VOfl4q/dNyiJlRvYnQqUCVS",
+    "role": "user",
+    "createdAt": "2026-03-30T09:41:07.581Z"
   }
 ]
