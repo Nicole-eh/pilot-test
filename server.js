@@ -1,11 +1,54 @@
 #!/usr/bin/env node
 
 const http = require('http');
-const url = require('url');
 const fs = require('fs');
 const path = require('path');
 const JsonStore = require('./store');
 const auth = require('./auth');
+
+// ==================== 安全配置 ====================
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
+const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1MB 请求体大小限制
+
+// ==================== 速率限制（认证端点） ====================
+const rateLimitStore = new Map();
+const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 分钟
+const RATE_LIMIT_MAX = 15; // 每窗口最大请求数
+
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const record = rateLimitStore.get(ip);
+  if (!record || now - record.windowStart > RATE_LIMIT_WINDOW) {
+    rateLimitStore.set(ip, { windowStart: now, count: 1 });
+    return true;
+  }
+  record.count++;
+  if (record.count > RATE_LIMIT_MAX) {
+    return false;
+  }
+  return true;
+}
+
+// 定期清理过期的速率限制记录
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of rateLimitStore) {
+    if (now - record.windowStart > RATE_LIMIT_WINDOW) {
+      rateLimitStore.delete(ip);
+    }
+  }
+}, 5 * 60 * 1000).unref();
+
+// ==================== 安全响应头 ====================
+function getSecurityHeaders() {
+  return {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'X-XSS-Protection': '1; mode=block',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+  };
+}
 
 /**
  * Node.js 应用 - HTTP 服务器 + RESTful API + JWT 认证
@@ -56,11 +99,18 @@ function saveUsers() {
 
 // ==================== 工具函数 ====================
 
-// 解析 JSON 请求体
+// 解析 JSON 请求体（含大小限制，防止 DoS）
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
+    let size = 0;
     req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        req.destroy();
+        reject(new Error('请求体过大，超过 1MB 限制'));
+        return;
+      }
       body += chunk.toString();
     });
     req.on('end', () => {
@@ -78,7 +128,8 @@ function parseBody(req) {
 function sendJSON(res, statusCode, data) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*'
+    'Access-Control-Allow-Origin': CORS_ORIGIN,
+    ...getSecurityHeaders()
   });
   res.end(JSON.stringify(data, null, 2));
 }
@@ -86,7 +137,8 @@ function sendJSON(res, statusCode, data) {
 // 发送 HTML 响应
 function sendHTML(res, statusCode, html) {
   res.writeHead(statusCode, {
-    'Content-Type': 'text/html; charset=utf-8'
+    'Content-Type': 'text/html; charset=utf-8',
+    ...getSecurityHeaders()
   });
   res.end(html);
 }
@@ -94,7 +146,8 @@ function sendHTML(res, statusCode, html) {
 // 发送纯文本响应
 function sendText(res, statusCode, text) {
   res.writeHead(statusCode, {
-    'Content-Type': 'text/plain; charset=utf-8'
+    'Content-Type': 'text/plain; charset=utf-8',
+    ...getSecurityHeaders()
   });
   res.end(text);
 }
@@ -104,7 +157,8 @@ function sendCSV(res, statusCode, csv, filename) {
   res.writeHead(statusCode, {
     'Content-Type': 'text/csv; charset=utf-8',
     'Content-Disposition': `attachment; filename="${filename}"`,
-    'Access-Control-Allow-Origin': '*'
+    'Access-Control-Allow-Origin': CORS_ORIGIN,
+    ...getSecurityHeaders()
   });
   res.end(csv);
 }
@@ -426,7 +480,8 @@ async function handleRegister(req, res) {
       data: result.data || undefined
     });
   } catch (error) {
-    sendJSON(res, 500, { success: false, message: error.message });
+    console.error('Register error:', error);
+    sendJSON(res, 500, { success: false, message: '服务器内部错误' });
   }
 }
 
@@ -441,7 +496,8 @@ async function handleLogin(req, res) {
       data: result.data || undefined
     });
   } catch (error) {
-    sendJSON(res, 500, { success: false, message: error.message });
+    console.error('Login error:', error);
+    sendJSON(res, 500, { success: false, message: '服务器内部错误' });
   }
 }
 
@@ -456,7 +512,8 @@ async function handleRefresh(req, res) {
       data: result.data || undefined
     });
   } catch (error) {
-    sendJSON(res, 500, { success: false, message: error.message });
+    console.error('Refresh error:', error);
+    sendJSON(res, 500, { success: false, message: '服务器内部错误' });
   }
 }
 
@@ -470,7 +527,8 @@ async function handleLogout(req, res) {
       message: result.message
     });
   } catch (error) {
-    sendJSON(res, 500, { success: false, message: error.message });
+    console.error('Logout error:', error);
+    sendJSON(res, 500, { success: false, message: '服务器内部错误' });
   }
 }
 
@@ -846,7 +904,9 @@ function getHomePage() {
 
 // ==================== HTTP 服务器 ====================
 const server = http.createServer(async (req, res) => {
-  const parsedUrl = url.parse(req.url, true);
+  // 使用 WHATWG URL API 替代已弃用的 url.parse()
+  const baseUrl = `http://${req.headers.host || 'localhost'}`;
+  const parsedUrl = new URL(req.url, baseUrl);
   const pathname = parsedUrl.pathname;
   const method = req.method;
 
@@ -855,9 +915,10 @@ const server = http.createServer(async (req, res) => {
   // 处理 CORS 预检请求
   if (method === 'OPTIONS') {
     res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': CORS_ORIGIN,
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      ...getSecurityHeaders()
     });
     res.end();
     return;
@@ -874,7 +935,18 @@ const server = http.createServer(async (req, res) => {
     // API 路由
     if (pathname.startsWith('/api')) {
 
-      // ---------- 认证路由 ----------
+      // ---------- 认证路由（含速率限制） ----------
+      if (pathname.startsWith('/api/auth/') && ['POST'].includes(method)) {
+        const clientIp = req.socket.remoteAddress || 'unknown';
+        if (!checkRateLimit(clientIp)) {
+          sendJSON(res, 429, {
+            success: false,
+            message: '请求过于频繁，请稍后再试'
+          });
+          return;
+        }
+      }
+
       // POST /api/auth/register
       if (pathname === '/api/auth/register' && method === 'POST') {
         await handleRegister(req, res);
@@ -1015,8 +1087,7 @@ const server = http.createServer(async (req, res) => {
     console.error('服务器错误:', error);
     sendJSON(res, 500, {
       success: false,
-      message: '服务器内部错误',
-      error: error.message
+      message: '服务器内部错误'
     });
   }
 });

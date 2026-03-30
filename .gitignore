@@ -25,5 +25,5 @@ dist/
 build/
 *.log
 
-# Data files (optional - you can track data/ if you want)
-# data/
+# Data files (contains hashed passwords and user data - do not commit)
+data/
