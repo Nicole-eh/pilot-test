@@ -12,5 +12,19 @@
     "password": "$2b$10$MrBuwGSDNm07pB7kjjWqSuqq7R46YDbUw8OKkZ4DP1ZHuSrAppz.a",
     "role": "admin",
     "createdAt": "2026-03-26T09:11:12.887Z"
+  },
+  {
+    "id": 3,
+    "username": "ratelimit_admin",
+    "password": "$2b$10$RJgcir/xCCLHMzf6jMiKp.9xH/zesvUs40xLafpVjIfyckPBQ3/Y2",
+    "role": "admin",
+    "createdAt": "2026-03-30T06:40:39.279Z"
+  },
+  {
+    "id": 4,
+    "username": "normaluser",
+    "password": "$2b$10$EVxs3ZDwh4wvI0NiKqnXNe.igwiYsQ3aM44zGXL5UYbMDIkpfVeAq",
+    "role": "user",
+    "createdAt": "2026-03-30T06:40:51.619Z"
   }
 ]

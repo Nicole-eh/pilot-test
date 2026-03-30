@@ -6,14 +6,16 @@ const fs = require('fs');
 const path = require('path');
 const JsonStore = require('./store');
 const auth = require('./auth');
+const { RateLimiter } = require('./rate-limiter');
 
 /**
- * Node.js 应用 - HTTP 服务器 + RESTful API + JWT 认证
+ * Node.js 应用 - HTTP 服务器 + RESTful API + JWT 认证 + 请求限流
  * 功能：
  * 1. HTTP Web 服务器（静态文件服务）
  * 2. RESTful API（用户 CRUD）
  * 3. JSON 数据处理和 CSV 导出
- * 4. JWT 身份验证 + 角色权限控制 (NEW!)
+ * 4. JWT 身份验证 + 角色权限控制
+ * 5. 请求限流（Rate Limiting）(NEW!)
  */
 
 // ==================== 数据存储 ====================
@@ -54,6 +56,40 @@ function saveUsers() {
   }
 }
 
+// ==================== 请求限流 ====================
+const rateLimiter = new RateLimiter({
+  // 可通过环境变量调整限流参数
+  global: {
+    windowMs: 60 * 1000,
+    maxHits: parseInt(process.env.RATE_LIMIT_GLOBAL) || 300,
+    enabled: true
+  },
+  perIP: {
+    windowMs: 60 * 1000,
+    maxHits: parseInt(process.env.RATE_LIMIT_PER_IP) || 60,
+    enabled: true
+  },
+  endpoints: {
+    '/api/auth/login': {
+      windowMs: 15 * 60 * 1000,
+      maxHits: parseInt(process.env.RATE_LIMIT_LOGIN) || 10,
+      enabled: true
+    },
+    '/api/auth/register': {
+      windowMs: 60 * 60 * 1000,
+      maxHits: parseInt(process.env.RATE_LIMIT_REGISTER) || 5,
+      enabled: true
+    },
+    '/api': {
+      windowMs: 60 * 1000,
+      maxHits: parseInt(process.env.RATE_LIMIT_API) || 40,
+      enabled: true
+    }
+  },
+  whitelist: (process.env.RATE_LIMIT_WHITELIST || '').split(',').filter(Boolean),
+  trustProxy: process.env.TRUST_PROXY === 'true'
+});
+
 // ==================== 工具函数 ====================
 
 // 解析 JSON 请求体
@@ -74,11 +110,12 @@ function parseBody(req) {
   });
 }
 
-// 发送 JSON 响应
-function sendJSON(res, statusCode, data) {
+// 发送 JSON 响应（支持额外 headers，用于注入限流头等）
+function sendJSON(res, statusCode, data, extraHeaders = {}) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*'
+    'Access-Control-Allow-Origin': '*',
+    ...extraHeaders
   });
   res.end(JSON.stringify(data, null, 2));
 }
@@ -156,12 +193,23 @@ function getStatistics() {
 
 // ==================== API 路由处理 ====================
 
-// GET /api/users - 获取所有用户
+// GET /api/users - 获取所有用户（支持分页/排序/搜索）
+// 查询参数：
+//   page=1&limit=10          分页
+//   sort=age&order=desc      排序
+//   search=张                搜索（匹配 name 和 email）
 function handleGetUsers(req, res) {
+  const parsedUrl = url.parse(req.url, true);
+  const options = parseQueryOptions(parsedUrl.query);
+  const searchFields = ['name', 'email'];
+
+  const result = applyQuery(users, options, searchFields);
+
   sendJSON(res, 200, {
     success: true,
-    count: users.length,
-    data: users
+    count: result.data.length,
+    pagination: result.pagination,
+    data: result.data
   });
 }
 
@@ -321,13 +369,24 @@ function handleGetStats(req, res) {
 const TODOS_FILE = path.join(DATA_DIR, 'todos.json');
 const todoStore = new JsonStore(TODOS_FILE);
 
-// GET /api/todos - 获取所有 TODO
+// GET /api/todos - 获取所有 TODO（支持分页/排序/搜索）
+// 查询参数：
+//   page=1&limit=10          分页
+//   sort=createdAt&order=desc 排序（支持 text, done, createdAt）
+//   search=学习              搜索（匹配 text）
 function handleGetTodos(req, res) {
+  const parsedUrl = url.parse(req.url, true);
+  const options = parseQueryOptions(parsedUrl.query);
+  const searchFields = ['text'];
+
   const todos = todoStore.getAll();
+  const result = applyQuery(todos, options, searchFields);
+
   sendJSON(res, 200, {
     success: true,
-    count: todos.length,
-    data: todos
+    count: result.data.length,
+    pagination: result.pagination,
+    data: result.data
   });
 }
 
@@ -489,7 +548,11 @@ function handleGetProfile(req, res) {
   });
 }
 
-// GET /api/auth/accounts - 获取所有账号（仅 admin）
+// GET /api/auth/accounts - 获取所有账号（仅 admin，支持分页/排序/搜索）
+// 查询参数：
+//   page=1&limit=10              分页
+//   sort=createdAt&order=desc    排序（支持 username, role, createdAt）
+//   search=admin                 搜索（匹配 username 和 role）
 function handleGetAccounts(req, res) {
   const authResult = auth.authenticate(req);
   if (!authResult.authenticated) {
@@ -501,11 +564,19 @@ function handleGetAccounts(req, res) {
     sendJSON(res, 403, { success: false, message: authzResult.error });
     return;
   }
-  const result = auth.getAllAccounts();
-  sendJSON(res, result.status, {
-    success: result.success,
-    count: result.data ? result.data.length : 0,
-    data: result.data
+
+  const parsedUrl = url.parse(req.url, true);
+  const options = parseQueryOptions(parsedUrl.query);
+  const searchFields = ['username', 'role'];
+
+  const accountResult = auth.getAllAccounts();
+  const queryResult = applyQuery(accountResult.data || [], options, searchFields);
+
+  sendJSON(res, accountResult.status, {
+    success: accountResult.success,
+    count: queryResult.data.length,
+    pagination: queryResult.pagination,
+    data: queryResult.data
   });
 }
 
@@ -537,7 +608,7 @@ function getHomePage() {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Node.js 学习项目 - HTTP 服务器 & RESTful API & JWT 认证</title>
+  <title>Node.js 学习项目 - HTTP 服务器 & RESTful API & JWT 认证 & 限流</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -667,7 +738,7 @@ function getHomePage() {
 <body>
   <div class="container">
     <h1>🚀 Node.js 全功能演示</h1>
-    <p class="subtitle">HTTP 服务器 + RESTful API + JWT 认证 + 角色权限</p>
+    <p class="subtitle">HTTP 服务器 + RESTful API + JWT 认证 + 角色权限 + 请求限流</p>
 
     <div class="section">
       <h2>📊 服务器状态</h2>
@@ -692,8 +763,8 @@ function getHomePage() {
       <ul class="api-list">
         <li class="api-item">
           <span class="method get">GET</span>
-          <span class="endpoint">/api/users</span>
-          <span class="description">获取所有用户</span>
+          <span class="endpoint">/api/users?page=1&limit=10&sort=age&order=desc&search=张</span>
+          <span class="description">获取用户（分页/排序/搜索）</span>
         </li>
         <li class="api-item">
           <span class="method get">GET</span>
@@ -731,8 +802,8 @@ function getHomePage() {
       <ul class="api-list">
         <li class="api-item">
           <span class="method get">GET</span>
-          <span class="endpoint">/api/todos</span>
-          <span class="description">获取所有待办</span>
+          <span class="endpoint">/api/todos?page=1&limit=10&sort=createdAt&order=desc&search=学习</span>
+          <span class="description">获取待办（分页/排序/搜索）</span>
         </li>
         <li class="api-item">
           <span class="method get">GET</span>
@@ -799,6 +870,87 @@ function getHomePage() {
       <p style="margin-top:10px;color:#888;font-size:0.85em;">
         🔒 = 需要 Bearer Token &nbsp;&nbsp; 👑 = 仅管理员
       </p>
+
+      <h2 style="margin-top:25px;">🛡 限流 API 端点</h2>
+      <ul class="api-list">
+        <li class="api-item">
+          <span class="method get">GET</span>
+          <span class="endpoint">/api/rate-limit/stats</span>
+          <span class="description">🔒👑 查看限流统计</span>
+        </li>
+      </ul>
+      <div style="margin-top:15px;background:white;padding:15px;border-radius:8px;">
+        <p style="font-weight:bold;margin-bottom:10px;">限流规则：</p>
+        <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+          <tr style="background:#f0f0f0;">
+            <th style="text-align:left;padding:8px;">维度</th>
+            <th style="text-align:left;padding:8px;">限制</th>
+            <th style="text-align:left;padding:8px;">说明</th>
+          </tr>
+          <tr>
+            <td style="padding:8px;border-bottom:1px solid #eee;">全局</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;">300 次/分钟</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;">所有客户端合计</td>
+          </tr>
+          <tr>
+            <td style="padding:8px;border-bottom:1px solid #eee;">按 IP</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;">60 次/分钟</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;">每个 IP 独立计数</td>
+          </tr>
+          <tr>
+            <td style="padding:8px;border-bottom:1px solid #eee;">API 接口</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;">40 次/分钟</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;">/api/* 每个 IP</td>
+          </tr>
+          <tr>
+            <td style="padding:8px;border-bottom:1px solid #eee;">登录</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;">10 次/15分钟</td>
+            <td style="padding:8px;border-bottom:1px solid #eee;">防暴力破解</td>
+          </tr>
+          <tr>
+            <td style="padding:8px;">注册</td>
+            <td style="padding:8px;">5 次/小时</td>
+            <td style="padding:8px;">防批量注册</td>
+          </tr>
+        </table>
+        <p style="margin-top:10px;color:#888;font-size:0.85em;">
+          所有响应都包含 <code>X-RateLimit-*</code> 响应头，被限流时返回 HTTP 429 + <code>Retry-After</code> 头。
+        </p>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>🔍 分页/排序/搜索</h2>
+      <p style="margin-bottom: 15px;">列表接口均支持以下查询参数：</p>
+      <div style="background: white; padding: 15px; border-radius: 8px;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.95em;">
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:8px;"><code>page</code></td>
+            <td style="padding:8px;">页码，从 1 开始（默认 1）</td>
+          </tr>
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:8px;"><code>limit</code></td>
+            <td style="padding:8px;">每页条数，1-100（默认 10）</td>
+          </tr>
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:8px;"><code>sort</code></td>
+            <td style="padding:8px;">排序字段，如 name, age, createdAt</td>
+          </tr>
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:8px;"><code>order</code></td>
+            <td style="padding:8px;">排序方向：asc（升序）或 desc（降序）</td>
+          </tr>
+          <tr>
+            <td style="padding:8px;"><code>search</code></td>
+            <td style="padding:8px;">关键字搜索（模糊匹配文本字段）</td>
+          </tr>
+        </table>
+      </div>
+      <div style="margin-top: 15px;">
+        <a href="/api/users?page=1&limit=2" class="button">分页: 每页2条</a>
+        <a href="/api/users?sort=age&order=desc" class="button">按年龄倒序</a>
+        <a href="/api/users?search=张" class="button">搜索"张"</a>
+      </div>
     </div>
 
     <div class="section">
@@ -813,6 +965,9 @@ function getHomePage() {
         <br><br>
         <p><strong>3. 用 Token 访问受保护接口：</strong></p>
         <code>curl http://localhost:3000/api/auth/profile -H "Authorization: Bearer &lt;你的token&gt;"</code>
+        <br><br>
+        <p><strong>4. 分页 + 排序 + 搜索：</strong></p>
+        <code>curl "http://localhost:3000/api/users?page=1&amp;limit=2&amp;sort=age&amp;order=desc&amp;search=张"</code>
       </div>
       <div style="margin-top: 15px;">
         <a href="/api/users" class="button">查看用户数据</a>
@@ -822,7 +977,7 @@ function getHomePage() {
     </div>
 
     <div class="footer">
-      <p>💻 Node.js + jsonwebtoken + bcryptjs</p>
+      <p>💻 Node.js + jsonwebtoken + bcryptjs + rate-limiter</p>
       <p>端口: 3000 | 数据: data/users.json, data/accounts.json</p>
     </div>
   </div>
@@ -850,9 +1005,13 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname;
   const method = req.method;
 
-  console.log(`[${new Date().toLocaleTimeString('zh-CN')}] ${method} ${pathname}`);
+  // 请求日志中间件 — 标记开始时间，响应结束时自动记录
+  logger.start(req);
+  res.on('finish', () => {
+    logger.end(req, res);
+  });
 
-  // 处理 CORS 预检请求
+  // 处理 CORS 预检请求（不计入限流）
   if (method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
@@ -861,6 +1020,39 @@ const server = http.createServer(async (req, res) => {
     });
     res.end();
     return;
+  }
+
+  // ---- 请求限流检查 ----
+  const clientIP = rateLimiter.getClientIP(req);
+  const rateResult = rateLimiter.check(clientIP, pathname);
+
+  // 将限流 headers 注入到所有响应中
+  const rlHeaders = rateResult.headers || {};
+
+  if (!rateResult.allowed) {
+    const retryAfter = Math.ceil((rateResult.retryAfterMs || 0) / 1000);
+    const reasons = {
+      global: '服务器请求过多，请稍后再试',
+      ip: '您的请求过于频繁，请稍后再试',
+      endpoint: `该接口请求过于频繁，请稍后再试`
+    };
+    console.log(`[限流] ${clientIP} 被拦截 (原因: ${rateResult.reason}, 端点: ${rateResult.endpoint || pathname})`);
+    sendJSON(res, 429, {
+      success: false,
+      message: reasons[rateResult.reason] || '请求过于频繁',
+      error: 'Too Many Requests',
+      retryAfter: retryAfter,
+      limit: rateResult.reason === 'endpoint' ? {
+        endpoint: rateResult.endpoint,
+        windowSeconds: Math.ceil((rateLimiter.config.endpoints[rateResult.endpoint]?.windowMs || 60000) / 1000)
+      } : undefined
+    }, rlHeaders);
+    return;
+  }
+
+  // 将限流 headers 附加到响应（即使没被拦截也返回配额信息）
+  for (const [key, value] of Object.entries(rlHeaders)) {
+    res.setHeader(key, value);
   }
 
   // 路由处理
@@ -873,6 +1065,26 @@ const server = http.createServer(async (req, res) => {
 
     // API 路由
     if (pathname.startsWith('/api')) {
+
+      // ---------- 限流统计路由 ----------
+      // GET /api/rate-limit/stats - 查看限流统计信息（仅 admin）
+      if (pathname === '/api/rate-limit/stats' && method === 'GET') {
+        const authResult = auth.authenticate(req);
+        if (!authResult.authenticated) {
+          sendJSON(res, 401, { success: false, message: authResult.error });
+          return;
+        }
+        const authzResult = auth.authorize(authResult.user, 'admin');
+        if (!authzResult.authorized) {
+          sendJSON(res, 403, { success: false, message: authzResult.error });
+          return;
+        }
+        sendJSON(res, 200, {
+          success: true,
+          data: rateLimiter.getStats()
+        });
+        return;
+      }
 
       // ---------- 认证路由 ----------
       // POST /api/auth/register
@@ -1012,7 +1224,7 @@ const server = http.createServer(async (req, res) => {
       </html>
     `);
   } catch (error) {
-    console.error('服务器错误:', error);
+    logger.error(error, req);
     sendJSON(res, 500, {
       success: false,
       message: '服务器内部错误',
@@ -1040,24 +1252,21 @@ server.listen(PORT, HOST, () => {
   `);
   console.log(`✅ 服务器运行在 http://localhost:${PORT}`);
   console.log(`📁 数据文件: ${USERS_FILE}`);
-  console.log(`👥 当前用户数: ${users.length}\n`);
+  console.log(`👥 当前用户数: ${users.length}`);
+  console.log(`🛡  限流已启用: 全局 ${rateLimiter.config.global.maxHits}/min, IP ${rateLimiter.config.perIP.maxHits}/min\n`);
 });
 
 // 优雅关闭
-process.on('SIGTERM', () => {
-  console.log('\n⏹  收到 SIGTERM 信号，正在关闭服务器...');
+function gracefulShutdown(signal) {
+  console.log(`\n⏹  收到 ${signal} 信号，正在关闭服务器...`);
+  rateLimiter.destroy(); // 清理限流器定时器
   server.close(() => {
     console.log('✅ 服务器已关闭');
     process.exit(0);
   });
-});
+}
 
-process.on('SIGINT', () => {
-  console.log('\n\n⏹  收到 SIGINT 信号，正在关闭服务器...');
-  server.close(() => {
-    console.log('✅ 服务器已关闭');
-    process.exit(0);
-  });
-});
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 module.exports = { server };

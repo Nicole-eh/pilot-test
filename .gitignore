@@ -25,5 +25,8 @@ dist/
 build/
 *.log
 
+# Access logs
+logs/
+
 # Data files (optional - you can track data/ if you want)
 # data/
