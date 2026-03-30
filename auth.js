@@ -18,10 +18,23 @@ const path = require('path');
  */
 
 // ==================== 配置 ====================
+
+// JWT 密钥必须通过环境变量配置，禁止使用硬编码默认值
+function requireEnv(name, fallbackForDev) {
+  const value = process.env[name];
+  if (value) return value;
+  if (process.env.NODE_ENV === 'production') {
+    console.error(`CRITICAL: Environment variable ${name} is not set. Refusing to start in production with default secrets.`);
+    process.exit(1);
+  }
+  console.warn(`WARNING: ${name} not set. Using insecure default. Set this env var before deploying to production!`);
+  return fallbackForDev;
+}
+
 const CONFIG = {
-  // JWT 密钥（生产环境应放在环境变量中）
-  JWT_SECRET: process.env.JWT_SECRET || 'my-super-secret-key-change-in-production',
-  JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'my-refresh-secret-key-change-in-production',
+  // JWT 密钥（必须通过环境变量设置，生产环境缺失时拒绝启动）
+  JWT_SECRET: requireEnv('JWT_SECRET', 'dev-only-jwt-secret-do-not-use-in-prod-' + crypto.randomUUID()),
+  JWT_REFRESH_SECRET: requireEnv('JWT_REFRESH_SECRET', 'dev-only-refresh-secret-do-not-use-in-prod-' + crypto.randomUUID()),
 
   // Token 过期时间
   ACCESS_TOKEN_EXPIRES: '15m',   // Access Token 15 分钟过期
@@ -42,7 +55,18 @@ const ACCOUNTS_FILE = path.join(__dirname, 'data', 'accounts.json');
 const accountStore = new JsonStore(ACCOUNTS_FILE);
 
 // 存储已撤销的 Refresh Token（生产环境应使用 Redis）
-const revokedTokens = new Set();
+// 使用 Map 存储 jti -> 过期时间，允许定期清理已过期的条目，防止内存泄漏
+const revokedTokens = new Map();
+
+// 定期清理过期的撤销记录（每 30 分钟）
+setInterval(() => {
+  const now = Date.now();
+  for (const [jti, expiresAt] of revokedTokens) {
+    if (expiresAt < now) {
+      revokedTokens.delete(jti);
+    }
+  }
+}, 30 * 60 * 1000).unref();
 
 // ==================== 工具函数 ====================
 
@@ -123,7 +147,12 @@ function verifyRefreshToken(token) {
     }
     // 检查是否已被撤销
     if (revokedTokens.has(decoded.jti)) {
-      return { valid: false, error: 'Token 已被撤销' };
+      const expiresAt = revokedTokens.get(decoded.jti);
+      if (expiresAt > Date.now()) {
+        return { valid: false, error: 'Token 已被撤销' };
+      }
+      // 已过期的撤销记录，清理掉
+      revokedTokens.delete(decoded.jti);
     }
     return { valid: true, decoded };
   } catch (error) {
@@ -202,14 +231,29 @@ async function register(username, password, role) {
     return { success: false, status: 400, message: '密码长度不能少于 6 个字符' };
   }
 
+  // 密码复杂度验证：至少包含大写字母、小写字母和数字
+  if (!/[A-Z]/.test(password)) {
+    return { success: false, status: 400, message: '密码必须包含至少一个大写字母' };
+  }
+  if (!/[a-z]/.test(password)) {
+    return { success: false, status: 400, message: '密码必须包含至少一个小写字母' };
+  }
+  if (!/[0-9]/.test(password)) {
+    return { success: false, status: 400, message: '密码必须包含至少一个数字' };
+  }
+
   // 检查用户名是否已存在
   const existing = accountStore.getAll().find(a => a.username === username);
   if (existing) {
     return { success: false, status: 409, message: '该用户名已被注册' };
   }
 
-  // 确定角色（只允许 admin 和 user）
-  const validRole = (role === CONFIG.ROLES.ADMIN) ? CONFIG.ROLES.ADMIN : CONFIG.ROLES.USER;
+  // 安全：注册接口始终分配 user 角色，防止权限提升攻击
+  // 管理员账号需要通过其他安全途径创建（如数据库直接操作或专用管理接口）
+  if (role === CONFIG.ROLES.ADMIN) {
+    console.warn(`WARNING: Registration attempt with admin role for username "${username}" was blocked.`);
+  }
+  const validRole = CONFIG.ROLES.USER;
 
   // 加密密码
   const hashedPassword = await hashPassword(password);
@@ -283,8 +327,9 @@ function refresh(refreshToken) {
     return { success: false, status: 401, message: '用户不存在' };
   }
 
-  // 撤销旧的 Refresh Token
-  revokedTokens.add(result.decoded.jti);
+  // 撤销旧的 Refresh Token（记录过期时间以便后续清理）
+  const tokenExp = result.decoded.exp ? result.decoded.exp * 1000 : Date.now() + 7 * 24 * 60 * 60 * 1000;
+  revokedTokens.set(result.decoded.jti, tokenExp);
 
   // 签发新的双 Token
   const newAccessToken = generateAccessToken(account);
@@ -313,7 +358,8 @@ function logout(refreshToken) {
   try {
     const decoded = jwt.verify(refreshToken, CONFIG.JWT_REFRESH_SECRET);
     if (decoded.jti) {
-      revokedTokens.add(decoded.jti);
+      const tokenExp = decoded.exp ? decoded.exp * 1000 : Date.now() + 7 * 24 * 60 * 60 * 1000;
+      revokedTokens.set(decoded.jti, tokenExp);
     }
   } catch (_) {
     // Token 已失效，无需撤销
