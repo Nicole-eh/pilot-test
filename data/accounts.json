@@ -15,23 +15,9 @@
   },
   {
     "id": 3,
-    "username": "debuguser1",
-    "password": "$2b$10$T6CcbH1b2mAnZvMHbxDiQupsOjTTR2Gggx6Uz1SciMG4VYPZpO2vK",
+    "username": "testmw",
+    "password": "$2b$10$nXCEqu09Tcp9pIEjfBPqX.I12WgURzCkS3fZEW80U0snJOTWl14kG",
     "role": "user",
-    "createdAt": "2026-03-30T09:38:30.342Z"
-  },
-  {
-    "id": 4,
-    "username": "tu_mnczzkzm",
-    "password": "$2b$10$Rb.sD0Wae3wsyej9vCOfU.F8xF2g7Meo4WtwLXzgEKpONf8RVfCvq",
-    "role": "user",
-    "createdAt": "2026-03-30T09:40:44.839Z"
-  },
-  {
-    "id": 5,
-    "username": "tu_mnd002j5",
-    "password": "$2b$10$HBFyRt8yLURYLGlZLhdq4eb.dRgpB1VOfl4q/dNyiJlRvYnQqUCVS",
-    "role": "user",
-    "createdAt": "2026-03-30T09:41:07.581Z"
+    "createdAt": "2026-03-31T10:45:06.540Z"
   }
 ]

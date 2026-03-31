@@ -7,10 +7,9 @@
     "start": "node index.js",
     "server": "node server.js",
     "dev": "node server.js",
-    "test": "node --test test/*.test.js",
-    "test:store": "node --test test/store.test.js",
-    "test:index": "node --test test/index.test.js",
-    "test:auth": "node --test test/auth.test.js"
+    "test": "node --test test/middleware.test.js test/router.test.js",
+    "test:middleware": "node --test test/middleware.test.js",
+    "test:router": "node --test test/router.test.js"
   },
   "keywords": [
     "nodejs",
