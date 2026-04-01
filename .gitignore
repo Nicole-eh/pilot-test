@@ -25,5 +25,8 @@ dist/
 build/
 *.log
 
+# Test temp files
+test/tmp/
+
 # Data files (optional - you can track data/ if you want)
 # data/

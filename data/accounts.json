@@ -12,5 +12,12 @@
     "password": "$2b$10$MrBuwGSDNm07pB7kjjWqSuqq7R46YDbUw8OKkZ4DP1ZHuSrAppz.a",
     "role": "admin",
     "createdAt": "2026-03-26T09:11:12.887Z"
+  },
+  {
+    "id": 3,
+    "username": "testmw",
+    "password": "$2b$10$nXCEqu09Tcp9pIEjfBPqX.I12WgURzCkS3fZEW80U0snJOTWl14kG",
+    "role": "user",
+    "createdAt": "2026-03-31T10:45:06.540Z"
   }
 ]

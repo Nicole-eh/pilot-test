@@ -6,14 +6,19 @@ const fs = require('fs');
 const path = require('path');
 const JsonStore = require('./store');
 const auth = require('./auth');
+const { MiddlewareEngine, loggerMiddleware, corsMiddleware, bodyParserMiddleware, errorHandlerMiddleware } = require('./middleware');
+const { Router } = require('./router');
 
 /**
  * Node.js 应用 - HTTP 服务器 + RESTful API + JWT 认证
- * 功能：
- * 1. HTTP Web 服务器（静态文件服务）
- * 2. RESTful API（用户 CRUD）
- * 3. JSON 数据处理和 CSV 导出
- * 4. JWT 身份验证 + 角色权限控制 (NEW!)
+ *
+ * 架构：中间件引擎 + 路由器
+ *   MiddlewareEngine（管道）
+ *     → loggerMiddleware（日志）
+ *     → corsMiddleware（跨域）
+ *     → bodyParserMiddleware（JSON 解析）
+ *     → Router（路由分发）
+ *     → errorHandlerMiddleware（错误处理）
  */
 
 // ==================== 数据存储 ====================
@@ -56,29 +61,10 @@ function saveUsers() {
 
 // ==================== 工具函数 ====================
 
-// 解析 JSON 请求体
-function parseBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', chunk => {
-      body += chunk.toString();
-    });
-    req.on('end', () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (error) {
-        reject(new Error('无效的 JSON 格式'));
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
 // 发送 JSON 响应
 function sendJSON(res, statusCode, data) {
   res.writeHead(statusCode, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*'
+    'Content-Type': 'application/json; charset=utf-8'
   });
   res.end(JSON.stringify(data, null, 2));
 }
@@ -91,20 +77,11 @@ function sendHTML(res, statusCode, html) {
   res.end(html);
 }
 
-// 发送纯文本响应
-function sendText(res, statusCode, text) {
-  res.writeHead(statusCode, {
-    'Content-Type': 'text/plain; charset=utf-8'
-  });
-  res.end(text);
-}
-
 // 发送 CSV 响应
 function sendCSV(res, statusCode, csv, filename) {
   res.writeHead(statusCode, {
     'Content-Type': 'text/csv; charset=utf-8',
-    'Content-Disposition': `attachment; filename="${filename}"`,
-    'Access-Control-Allow-Origin': '*'
+    'Content-Disposition': `attachment; filename="${filename}"`
   });
   res.end(csv);
 }
@@ -154,140 +131,160 @@ function getStatistics() {
   };
 }
 
-// ==================== API 路由处理 ====================
+// ==================== TODO 数据存储 ====================
+const TODOS_FILE = path.join(DATA_DIR, 'todos.json');
+const todoStore = new JsonStore(TODOS_FILE);
 
-// GET /api/users - 获取所有用户
-function handleGetUsers(req, res) {
+// ==================== 认证辅助中间件 ====================
+
+/**
+ * 要求认证的中间件：验证 Token 后挂载 req.user
+ * 用于保护需要登录才能访问的路由
+ */
+function requireAuth(req, res, next) {
+  const authResult = auth.authenticate(req);
+  if (!authResult.authenticated) {
+    sendJSON(res, 401, { success: false, message: authResult.error });
+    return;
+  }
+  req.user = authResult.user;
+  next();
+}
+
+/**
+ * 要求 admin 角色的中间件（需要先经过 requireAuth）
+ */
+function requireAdmin(req, res, next) {
+  const authzResult = auth.authorize(req.user, 'admin');
+  if (!authzResult.authorized) {
+    sendJSON(res, 403, { success: false, message: authzResult.error });
+    return;
+  }
+  next();
+}
+
+// ==================== 路由定义 ====================
+
+// --- 用户 CRUD 路由 ---
+const userRouter = new Router();
+
+// GET /users — 获取所有用户
+userRouter.get('/users', (req, res) => {
   sendJSON(res, 200, {
     success: true,
     count: users.length,
     data: users
   });
-}
+});
 
-// GET /api/users/:id - 获取单个用户
-function handleGetUser(req, res, id) {
-  const user = users.find(u => u.id === parseInt(id));
+// GET /users/export/csv — 导出 CSV（必须放在 /users/:id 前面）
+userRouter.get('/users/export/csv', (req, res) => {
+  const csv = usersToCSV();
+  sendCSV(res, 200, csv, 'users.csv');
+});
+
+// GET /users/:id — 获取单个用户
+userRouter.get('/users/:id', (req, res) => {
+  const user = users.find(u => u.id === parseInt(req.params.id));
   if (!user) {
     sendJSON(res, 404, {
       success: false,
-      message: `未找到 ID 为 ${id} 的用户`
+      message: `未找到 ID 为 ${req.params.id} 的用户`
     });
     return;
   }
-  sendJSON(res, 200, {
+  sendJSON(res, 200, { success: true, data: user });
+});
+
+// POST /users — 创建新用户
+userRouter.post('/users', (req, res) => {
+  const body = req.body;
+
+  if (!body.name || !body.email) {
+    sendJSON(res, 400, {
+      success: false,
+      message: '缺少必填字段：name 和 email'
+    });
+    return;
+  }
+
+  if (users.find(u => u.email === body.email)) {
+    sendJSON(res, 400, {
+      success: false,
+      message: '该邮箱已被使用'
+    });
+    return;
+  }
+
+  const newUser = {
+    id: users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1,
+    name: body.name,
+    email: body.email,
+    age: body.age || 0,
+    createdAt: new Date().toISOString()
+  };
+
+  users.push(newUser);
+  saveUsers();
+
+  sendJSON(res, 201, {
     success: true,
-    data: user
+    message: '用户创建成功',
+    data: newUser
   });
-}
+});
 
-// POST /api/users - 创建新用户
-async function handleCreateUser(req, res) {
-  try {
-    const body = await parseBody(req);
-
-    // 验证必填字段
-    if (!body.name || !body.email) {
-      sendJSON(res, 400, {
-        success: false,
-        message: '缺少必填字段：name 和 email'
-      });
-      return;
-    }
-
-    // 检查邮箱是否已存在
-    if (users.find(u => u.email === body.email)) {
-      sendJSON(res, 400, {
-        success: false,
-        message: '该邮箱已被使用'
-      });
-      return;
-    }
-
-    // 创建新用户
-    const newUser = {
-      id: users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1,
-      name: body.name,
-      email: body.email,
-      age: body.age || 0,
-      createdAt: new Date().toISOString()
-    };
-
-    users.push(newUser);
-    saveUsers();
-
-    sendJSON(res, 201, {
-      success: true,
-      message: '用户创建成功',
-      data: newUser
-    });
-  } catch (error) {
-    sendJSON(res, 400, {
-      success: false,
-      message: error.message
-    });
-  }
-}
-
-// PUT /api/users/:id - 更新用户
-async function handleUpdateUser(req, res, id) {
-  try {
-    const userId = parseInt(id);
-    const userIndex = users.findIndex(u => u.id === userId);
-
-    if (userIndex === -1) {
-      sendJSON(res, 404, {
-        success: false,
-        message: `未找到 ID 为 ${id} 的用户`
-      });
-      return;
-    }
-
-    const body = await parseBody(req);
-    const updatedUser = {
-      ...users[userIndex],
-      name: body.name || users[userIndex].name,
-      email: body.email || users[userIndex].email,
-      age: body.age !== undefined ? body.age : users[userIndex].age,
-      updatedAt: new Date().toISOString()
-    };
-
-    // 检查邮箱是否被其他用户使用
-    if (body.email && body.email !== users[userIndex].email) {
-      if (users.find(u => u.email === body.email && u.id !== userId)) {
-        sendJSON(res, 400, {
-          success: false,
-          message: '该邮箱已被其他用户使用'
-        });
-        return;
-      }
-    }
-
-    users[userIndex] = updatedUser;
-    saveUsers();
-
-    sendJSON(res, 200, {
-      success: true,
-      message: '用户更新成功',
-      data: updatedUser
-    });
-  } catch (error) {
-    sendJSON(res, 400, {
-      success: false,
-      message: error.message
-    });
-  }
-}
-
-// DELETE /api/users/:id - 删除用户
-function handleDeleteUser(req, res, id) {
-  const userId = parseInt(id);
+// PUT /users/:id — 更新用户
+userRouter.put('/users/:id', (req, res) => {
+  const userId = parseInt(req.params.id);
   const userIndex = users.findIndex(u => u.id === userId);
 
   if (userIndex === -1) {
     sendJSON(res, 404, {
       success: false,
-      message: `未找到 ID 为 ${id} 的用户`
+      message: `未找到 ID 为 ${req.params.id} 的用户`
+    });
+    return;
+  }
+
+  const body = req.body;
+  const updatedUser = {
+    ...users[userIndex],
+    name: body.name || users[userIndex].name,
+    email: body.email || users[userIndex].email,
+    age: body.age !== undefined ? body.age : users[userIndex].age,
+    updatedAt: new Date().toISOString()
+  };
+
+  if (body.email && body.email !== users[userIndex].email) {
+    if (users.find(u => u.email === body.email && u.id !== userId)) {
+      sendJSON(res, 400, {
+        success: false,
+        message: '该邮箱已被其他用户使用'
+      });
+      return;
+    }
+  }
+
+  users[userIndex] = updatedUser;
+  saveUsers();
+
+  sendJSON(res, 200, {
+    success: true,
+    message: '用户更新成功',
+    data: updatedUser
+  });
+});
+
+// DELETE /users/:id — 删除用户
+userRouter.delete('/users/:id', (req, res) => {
+  const userId = parseInt(req.params.id);
+  const userIndex = users.findIndex(u => u.id === userId);
+
+  if (userIndex === -1) {
+    sendJSON(res, 404, {
+      success: false,
+      message: `未找到 ID 为 ${req.params.id} 的用户`
     });
     return;
   }
@@ -300,109 +297,91 @@ function handleDeleteUser(req, res, id) {
     message: '用户删除成功',
     data: deletedUser
   });
-}
+});
 
-// GET /api/users/export/csv - 导出 CSV
-function handleExportCSV(req, res) {
-  const csv = usersToCSV();
-  sendCSV(res, 200, csv, 'users.csv');
-}
-
-// GET /api/stats - 获取统计信息
-function handleGetStats(req, res) {
+// GET /stats — 统计信息
+userRouter.get('/stats', (req, res) => {
   const stats = getStatistics();
-  sendJSON(res, 200, {
-    success: true,
-    data: stats
-  });
-}
+  sendJSON(res, 200, { success: true, data: stats });
+});
 
-// ==================== TODO API ====================
-const TODOS_FILE = path.join(DATA_DIR, 'todos.json');
-const todoStore = new JsonStore(TODOS_FILE);
+// --- TODO 路由 ---
+const todoRouter = new Router();
 
-// GET /api/todos - 获取所有 TODO
-function handleGetTodos(req, res) {
+// GET /todos
+todoRouter.get('/todos', (req, res) => {
   const todos = todoStore.getAll();
   sendJSON(res, 200, {
     success: true,
     count: todos.length,
     data: todos
   });
-}
+});
 
-// GET /api/todos/:id - 获取单个 TODO
-function handleGetTodo(req, res, id) {
-  const todo = todoStore.getById(id);
+// GET /todos/:id
+todoRouter.get('/todos/:id', (req, res) => {
+  const todo = todoStore.getById(req.params.id);
   if (!todo) {
     sendJSON(res, 404, {
       success: false,
-      message: `未找到 ID 为 ${id} 的待办事项`
+      message: `未找到 ID 为 ${req.params.id} 的待办事项`
     });
     return;
   }
   sendJSON(res, 200, { success: true, data: todo });
-}
+});
 
-// POST /api/todos - 创建 TODO
-async function handleCreateTodo(req, res) {
-  try {
-    const body = await parseBody(req);
-    if (!body.text || !body.text.trim()) {
-      sendJSON(res, 400, {
-        success: false,
-        message: '缺少必填字段：text'
-      });
-      return;
-    }
-    const todo = todoStore.create({
-      text: body.text.trim(),
-      done: false
+// POST /todos
+todoRouter.post('/todos', (req, res) => {
+  const body = req.body;
+  if (!body.text || !body.text.trim()) {
+    sendJSON(res, 400, {
+      success: false,
+      message: '缺少必填字段：text'
     });
-    sendJSON(res, 201, {
-      success: true,
-      message: '待办事项创建成功',
-      data: todo
-    });
-  } catch (error) {
-    sendJSON(res, 400, { success: false, message: error.message });
+    return;
   }
-}
+  const todo = todoStore.create({
+    text: body.text.trim(),
+    done: false
+  });
+  sendJSON(res, 201, {
+    success: true,
+    message: '待办事项创建成功',
+    data: todo
+  });
+});
 
-// PUT /api/todos/:id - 更新 TODO
-async function handleUpdateTodo(req, res, id) {
-  try {
-    const existing = todoStore.getById(id);
-    if (!existing) {
-      sendJSON(res, 404, {
-        success: false,
-        message: `未找到 ID 为 ${id} 的待办事项`
-      });
-      return;
-    }
-    const body = await parseBody(req);
-    const updates = {};
-    if (body.text !== undefined) updates.text = body.text.trim();
-    if (body.done !== undefined) updates.done = Boolean(body.done);
-
-    const updated = todoStore.update(id, updates);
-    sendJSON(res, 200, {
-      success: true,
-      message: '待办事项更新成功',
-      data: updated
+// PUT /todos/:id
+todoRouter.put('/todos/:id', (req, res) => {
+  const existing = todoStore.getById(req.params.id);
+  if (!existing) {
+    sendJSON(res, 404, {
+      success: false,
+      message: `未找到 ID 为 ${req.params.id} 的待办事项`
     });
-  } catch (error) {
-    sendJSON(res, 400, { success: false, message: error.message });
+    return;
   }
-}
+  const body = req.body;
+  const updates = {};
+  if (body.text !== undefined) updates.text = body.text.trim();
+  if (body.done !== undefined) updates.done = Boolean(body.done);
 
-// DELETE /api/todos/:id - 删除 TODO
-function handleDeleteTodo(req, res, id) {
-  const deleted = todoStore.delete(id);
+  const updated = todoStore.update(req.params.id, updates);
+  sendJSON(res, 200, {
+    success: true,
+    message: '待办事项更新成功',
+    data: updated
+  });
+});
+
+// DELETE /todos/:id
+todoRouter.delete('/todos/:id', (req, res) => {
+  const deleted = todoStore.delete(req.params.id);
   if (!deleted) {
     sendJSON(res, 404, {
       success: false,
-      message: `未找到 ID 为 ${id} 的待办事项`
+      message: `未找到 ID 为 ${req.params.id} 的待办事项`
     });
     return;
   }
@@ -411,14 +390,15 @@ function handleDeleteTodo(req, res, id) {
     message: '待办事项删除成功',
     data: deleted
   });
-}
+});
 
-// ==================== 认证 API ====================
+// --- 认证路由 ---
+const authRouter = new Router();
 
-// POST /api/auth/register - 用户注册
-async function handleRegister(req, res) {
+// POST /auth/register
+authRouter.post('/register', async (req, res) => {
   try {
-    const body = await parseBody(req);
+    const body = req.body;
     const result = await auth.register(body.username, body.password, body.role);
     sendJSON(res, result.status, {
       success: result.success,
@@ -428,12 +408,12 @@ async function handleRegister(req, res) {
   } catch (error) {
     sendJSON(res, 500, { success: false, message: error.message });
   }
-}
+});
 
-// POST /api/auth/login - 用户登录
-async function handleLogin(req, res) {
+// POST /auth/login
+authRouter.post('/login', async (req, res) => {
   try {
-    const body = await parseBody(req);
+    const body = req.body;
     const result = await auth.login(body.username, body.password);
     sendJSON(res, result.status, {
       success: result.success,
@@ -443,12 +423,12 @@ async function handleLogin(req, res) {
   } catch (error) {
     sendJSON(res, 500, { success: false, message: error.message });
   }
-}
+});
 
-// POST /api/auth/refresh - 刷新 Token
-async function handleRefresh(req, res) {
+// POST /auth/refresh
+authRouter.post('/refresh', (req, res) => {
   try {
-    const body = await parseBody(req);
+    const body = req.body;
     const result = auth.refresh(body.refreshToken);
     sendJSON(res, result.status, {
       success: result.success,
@@ -458,12 +438,12 @@ async function handleRefresh(req, res) {
   } catch (error) {
     sendJSON(res, 500, { success: false, message: error.message });
   }
-}
+});
 
-// POST /api/auth/logout - 退出登录
-async function handleLogout(req, res) {
+// POST /auth/logout
+authRouter.post('/logout', (req, res) => {
   try {
-    const body = await parseBody(req);
+    const body = req.body;
     const result = auth.logout(body.refreshToken);
     sendJSON(res, result.status, {
       success: result.success,
@@ -472,10 +452,10 @@ async function handleLogout(req, res) {
   } catch (error) {
     sendJSON(res, 500, { success: false, message: error.message });
   }
-}
+});
 
-// GET /api/auth/profile - 获取当前用户信息（需认证）
-function handleGetProfile(req, res) {
+// GET /auth/profile (需认证)
+authRouter.get('/profile', (req, res) => {
   const authResult = auth.authenticate(req);
   if (!authResult.authenticated) {
     sendJSON(res, 401, { success: false, message: authResult.error });
@@ -487,10 +467,10 @@ function handleGetProfile(req, res) {
     data: result.data || undefined,
     message: result.message || undefined
   });
-}
+});
 
-// GET /api/auth/accounts - 获取所有账号（仅 admin）
-function handleGetAccounts(req, res) {
+// GET /auth/accounts (仅 admin)
+authRouter.get('/accounts', (req, res) => {
   const authResult = auth.authenticate(req);
   if (!authResult.authenticated) {
     sendJSON(res, 401, { success: false, message: authResult.error });
@@ -507,10 +487,10 @@ function handleGetAccounts(req, res) {
     count: result.data ? result.data.length : 0,
     data: result.data
   });
-}
+});
 
-// DELETE /api/auth/accounts/:id - 删除账号（仅 admin）
-function handleDeleteAccount(req, res, id) {
+// DELETE /auth/accounts/:id (仅 admin)
+authRouter.delete('/accounts/:id', (req, res) => {
   const authResult = auth.authenticate(req);
   if (!authResult.authenticated) {
     sendJSON(res, 401, { success: false, message: authResult.error });
@@ -521,13 +501,88 @@ function handleDeleteAccount(req, res, id) {
     sendJSON(res, 403, { success: false, message: authzResult.error });
     return;
   }
-  const result = auth.deleteAccount(id, authResult.user.id);
+  const result = auth.deleteAccount(req.params.id, authResult.user.id);
   sendJSON(res, result.status, {
     success: result.success,
     message: result.message,
     data: result.data || undefined
   });
+});
+
+// --- 主路由器：组合所有子路由 ---
+const apiRouter = new Router();
+apiRouter.mount('/auth', authRouter);
+
+// 将 userRouter 和 todoRouter 的路由合并到 apiRouter
+// （它们的路由路径已经包含 /users、/todos 前缀）
+for (const route of userRouter.routes) {
+  apiRouter._addRoute(route.method, route.pattern, route.handler);
 }
+for (const route of todoRouter.routes) {
+  apiRouter._addRoute(route.method, route.pattern, route.handler);
+}
+
+// ==================== 组装中间件引擎 ====================
+const app = new MiddlewareEngine();
+
+// 1. URL 解析中间件：设置 req.pathname 和 req.query
+app.use((req, res, next) => {
+  const parsedUrl = url.parse(req.url, true);
+  req.pathname = parsedUrl.pathname;
+  req.query = parsedUrl.query;
+  next();
+});
+
+// 2. 日志中间件
+app.use(loggerMiddleware());
+
+// 3. CORS 中间件
+app.use(corsMiddleware());
+
+// 4. 主页路由（在 bodyParser 之前，GET 不需要解析 body）
+app.use((req, res, next) => {
+  if (req.pathname === '/' && req.method === 'GET') {
+    sendHTML(res, 200, getHomePage());
+    return;
+  }
+  next();
+});
+
+// 5. JSON Body 解析中间件（仅对 /api 路径生效）
+app.use('/api', bodyParserMiddleware());
+
+// 6. API 路由中间件
+app.use('/api', (req, res, next) => {
+  const pathname = req.pathname;
+  // 剥离 /api 前缀后交给路由器
+  const apiPath = pathname.slice(4) || '/';
+
+  if (apiRouter.handle(req.method, apiPath, req, res)) {
+    return; // 路由已处理
+  }
+
+  // API 404
+  sendJSON(res, 404, {
+    success: false,
+    message: '未找到该 API 端点'
+  });
+});
+
+// 7. 通用 404 页面
+app.use((req, res, next) => {
+  sendHTML(res, 404, `
+    <html>
+      <head><title>404 Not Found</title></head>
+      <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+        <h1>404 - 页面未找到</h1>
+        <p><a href="/" style="color: #667eea;">返回主页</a></p>
+      </body>
+    </html>
+  `);
+});
+
+// 8. 错误处理中间件（必须放在最后）
+app.use(errorHandlerMiddleware());
 
 // ==================== 主页 HTML ====================
 function getHomePage() {
@@ -666,11 +721,11 @@ function getHomePage() {
 </head>
 <body>
   <div class="container">
-    <h1>🚀 Node.js 全功能演示</h1>
-    <p class="subtitle">HTTP 服务器 + RESTful API + JWT 认证 + 角色权限</p>
+    <h1>Node.js 全功能演示</h1>
+    <p class="subtitle">HTTP 服务器 + RESTful API + JWT 认证 + 中间件引擎 + 路由器</p>
 
     <div class="section">
-      <h2>📊 服务器状态</h2>
+      <h2>服务器状态</h2>
       <div class="stats">
         <div class="stat-card">
           <div class="stat-label">用户总数</div>
@@ -682,13 +737,13 @@ function getHomePage() {
         </div>
         <div class="stat-card">
           <div class="stat-label">服务器状态</div>
-          <div class="stat-value">✅</div>
+          <div class="stat-value">OK</div>
         </div>
       </div>
     </div>
 
     <div class="section">
-      <h2>🔌 RESTful API 端点</h2>
+      <h2>RESTful API 端点</h2>
       <ul class="api-list">
         <li class="api-item">
           <span class="method get">GET</span>
@@ -727,7 +782,7 @@ function getHomePage() {
         </li>
       </ul>
 
-      <h2 style="margin-top:25px;">📝 TODO API 端点</h2>
+      <h2 style="margin-top:25px;">TODO API 端点</h2>
       <ul class="api-list">
         <li class="api-item">
           <span class="method get">GET</span>
@@ -758,7 +813,7 @@ function getHomePage() {
     </div>
 
     <div class="section">
-      <h2>🔐 认证 API 端点 (JWT)</h2>
+      <h2>认证 API 端点 (JWT)</h2>
       <ul class="api-list">
         <li class="api-item">
           <span class="method post">POST</span>
@@ -768,7 +823,7 @@ function getHomePage() {
         <li class="api-item">
           <span class="method post">POST</span>
           <span class="endpoint">/api/auth/login</span>
-          <span class="description">用户登录（获取 Token）</span>
+          <span class="description">��户登录（获取 Token）</span>
         </li>
         <li class="api-item">
           <span class="method post">POST</span>
@@ -783,26 +838,26 @@ function getHomePage() {
         <li class="api-item">
           <span class="method get">GET</span>
           <span class="endpoint">/api/auth/profile</span>
-          <span class="description">🔒 获取个人信息</span>
+          <span class="description">获取个人信息（需认证）</span>
         </li>
         <li class="api-item">
           <span class="method get">GET</span>
           <span class="endpoint">/api/auth/accounts</span>
-          <span class="description">🔒👑 所有账号（仅 admin）</span>
+          <span class="description">所有账号（仅 admin）</span>
         </li>
         <li class="api-item">
           <span class="method delete">DELETE</span>
           <span class="endpoint">/api/auth/accounts/:id</span>
-          <span class="description">🔒👑 删除账号（仅 admin）</span>
+          <span class="description">删除账号（仅 admin）</span>
         </li>
       </ul>
       <p style="margin-top:10px;color:#888;font-size:0.85em;">
-        🔒 = 需要 Bearer Token &nbsp;&nbsp; 👑 = 仅管理员
+        需认证接口需要 Bearer Token; 管理接口仅管理员可用
       </p>
     </div>
 
     <div class="section">
-      <h2>🧪 快速测试</h2>
+      <h2>快速测试</h2>
       <p style="margin-bottom: 15px;">使用以下命令测试 API：</p>
       <div style="background: white; padding: 15px; border-radius: 8px;">
         <p><strong>1. 注册用户：</strong></p>
@@ -821,8 +876,17 @@ function getHomePage() {
       </div>
     </div>
 
+    <div class="section">
+      <h2>架构说明</h2>
+      <div style="background: white; padding: 15px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 0.85em; line-height: 1.8;">
+        请求 → URL解析 → 日志 → CORS → BodyParser → Router → 响应<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↓ (出错时)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ErrorHandler → 错误响应
+      </div>
+    </div>
+
     <div class="footer">
-      <p>💻 Node.js + jsonwebtoken + bcryptjs</p>
+      <p>Node.js + 中间件引擎 + 路由器 + JWT</p>
       <p>端口: 3000 | 数据: data/users.json, data/accounts.json</p>
     </div>
   </div>
@@ -845,180 +909,17 @@ function getHomePage() {
 }
 
 // ==================== HTTP 服务器 ====================
-const server = http.createServer(async (req, res) => {
-  const parsedUrl = url.parse(req.url, true);
-  const pathname = parsedUrl.pathname;
-  const method = req.method;
-
-  console.log(`[${new Date().toLocaleTimeString('zh-CN')}] ${method} ${pathname}`);
-
-  // 处理 CORS 预检请求
-  if (method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-    });
-    res.end();
-    return;
-  }
-
-  // 路由处理
-  try {
-    // 主页
-    if (pathname === '/' && method === 'GET') {
-      sendHTML(res, 200, getHomePage());
-      return;
+const server = http.createServer((req, res) => {
+  app.run(req, res, (err) => {
+    // 如果所有中间件都没有处理（不应该发生，因为有 404 中间件兜底）
+    if (err) {
+      console.error('未捕获的服务器错误:', err);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ success: false, message: '服务器内部错误' }));
+      }
     }
-
-    // API 路由
-    if (pathname.startsWith('/api')) {
-
-      // ---------- 认证路由 ----------
-      // POST /api/auth/register
-      if (pathname === '/api/auth/register' && method === 'POST') {
-        await handleRegister(req, res);
-        return;
-      }
-
-      // POST /api/auth/login
-      if (pathname === '/api/auth/login' && method === 'POST') {
-        await handleLogin(req, res);
-        return;
-      }
-
-      // POST /api/auth/refresh
-      if (pathname === '/api/auth/refresh' && method === 'POST') {
-        await handleRefresh(req, res);
-        return;
-      }
-
-      // POST /api/auth/logout
-      if (pathname === '/api/auth/logout' && method === 'POST') {
-        await handleLogout(req, res);
-        return;
-      }
-
-      // GET /api/auth/profile (需认证)
-      if (pathname === '/api/auth/profile' && method === 'GET') {
-        handleGetProfile(req, res);
-        return;
-      }
-
-      // GET /api/auth/accounts (仅 admin)
-      if (pathname === '/api/auth/accounts' && method === 'GET') {
-        handleGetAccounts(req, res);
-        return;
-      }
-
-      // DELETE /api/auth/accounts/:id (仅 admin)
-      const accountMatch = pathname.match(/^\/api\/auth\/accounts\/(\d+)$/);
-      if (accountMatch && method === 'DELETE') {
-        handleDeleteAccount(req, res, accountMatch[1]);
-        return;
-      }
-
-      // ---------- 用户 CRUD 路由 ----------
-      // GET /api/users
-      if (pathname === '/api/users' && method === 'GET') {
-        handleGetUsers(req, res);
-        return;
-      }
-
-      // GET /api/stats
-      if (pathname === '/api/stats' && method === 'GET') {
-        handleGetStats(req, res);
-        return;
-      }
-
-      // GET /api/users/export/csv
-      if (pathname === '/api/users/export/csv' && method === 'GET') {
-        handleExportCSV(req, res);
-        return;
-      }
-
-      // POST /api/users
-      if (pathname === '/api/users' && method === 'POST') {
-        await handleCreateUser(req, res);
-        return;
-      }
-
-      // GET /api/users/:id
-      const getUserMatch = pathname.match(/^\/api\/users\/(\d+)$/);
-      if (getUserMatch && method === 'GET') {
-        handleGetUser(req, res, getUserMatch[1]);
-        return;
-      }
-
-      // PUT /api/users/:id
-      if (getUserMatch && method === 'PUT') {
-        await handleUpdateUser(req, res, getUserMatch[1]);
-        return;
-      }
-
-      // DELETE /api/users/:id
-      if (getUserMatch && method === 'DELETE') {
-        handleDeleteUser(req, res, getUserMatch[1]);
-        return;
-      }
-
-      // --- TODO API ---
-      // GET /api/todos
-      if (pathname === '/api/todos' && method === 'GET') {
-        handleGetTodos(req, res);
-        return;
-      }
-
-      // POST /api/todos
-      if (pathname === '/api/todos' && method === 'POST') {
-        await handleCreateTodo(req, res);
-        return;
-      }
-
-      // GET/PUT/DELETE /api/todos/:id
-      const getTodoMatch = pathname.match(/^\/api\/todos\/(\d+)$/);
-      if (getTodoMatch) {
-        const todoId = getTodoMatch[1];
-        if (method === 'GET') {
-          handleGetTodo(req, res, todoId);
-          return;
-        }
-        if (method === 'PUT') {
-          await handleUpdateTodo(req, res, todoId);
-          return;
-        }
-        if (method === 'DELETE') {
-          handleDeleteTodo(req, res, todoId);
-          return;
-        }
-      }
-
-      // API 404
-      sendJSON(res, 404, {
-        success: false,
-        message: '未找到该 API 端点'
-      });
-      return;
-    }
-
-    // 其他请求 404
-    sendHTML(res, 404, `
-      <html>
-        <head><title>404 Not Found</title></head>
-        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
-          <h1>404 - 页面未找到</h1>
-          <p><a href="/" style="color: #667eea;">返回主页</a></p>
-        </body>
-      </html>
-    `);
-  } catch (error) {
-    console.error('服务器错误:', error);
-    sendJSON(res, 500, {
-      success: false,
-      message: '服务器内部错误',
-      error: error.message
-    });
-  }
+  });
 });
 
 // ==================== 启动服务器 ====================
@@ -1027,37 +928,40 @@ const HOST = '0.0.0.0';
 
 server.listen(PORT, HOST, () => {
   console.log(`
-╔═══════════════════════════════════════════════════════╗
-║                                                       ║
-║   🚀 Node.js HTTP 服务器已启动！                     ║
-║                                                       ║
-║   📍 地址: http://localhost:${PORT}                      ║
-║   📊 API:  http://localhost:${PORT}/api/users            ║
-║                                                       ║
-║   按 Ctrl+C 停止服务器                                ║
-║                                                       ║
-╚═══════════════════════════════════════════════════════╝
++-------------------------------------------------------+
+|                                                       |
+|   Node.js HTTP 服务器已启动！                         |
+|                                                       |
+|   地址: http://localhost:${PORT}                         |
+|   API:  http://localhost:${PORT}/api/users               |
+|                                                       |
+|   架构: MiddlewareEngine + Router                     |
+|   中间件: Logger → CORS → BodyParser → Router         |
+|                                                       |
+|   按 Ctrl+C 停止服务器                                |
+|                                                       |
++-------------------------------------------------------+
   `);
-  console.log(`✅ 服务器运行在 http://localhost:${PORT}`);
-  console.log(`📁 数据文件: ${USERS_FILE}`);
-  console.log(`👥 当前用户数: ${users.length}\n`);
+  console.log(`服务器运行在 http://localhost:${PORT}`);
+  console.log(`数据文件: ${USERS_FILE}`);
+  console.log(`当前用户数: ${users.length}\n`);
 });
 
 // 优雅关闭
 process.on('SIGTERM', () => {
-  console.log('\n⏹  收到 SIGTERM 信号，正在关闭服务器...');
+  console.log('\n收到 SIGTERM 信号，正在关闭服务器...');
   server.close(() => {
-    console.log('✅ 服务器已关闭');
+    console.log('服务器已关闭');
     process.exit(0);
   });
 });
 
 process.on('SIGINT', () => {
-  console.log('\n\n⏹  收到 SIGINT 信号，正在关闭服务器...');
+  console.log('\n\n收到 SIGINT 信号，正在关闭服务器...');
   server.close(() => {
-    console.log('✅ 服务器已关闭');
+    console.log('服务器已关闭');
     process.exit(0);
   });
 });
 
-module.exports = { server };
+module.exports = { server, app, apiRouter, userRouter, todoRouter, authRouter };
