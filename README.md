@@ -10,6 +10,7 @@
 - ✅ 命令行参数处理
 - ✅ 文件读写（日志系统）
 - ✅ 简单计算器
+- ✅ TODO 待办事项（增删改查）
 - ✅ 中文友好的命令行界面
 
 ### 🚀 中级功能 (server.js)
@@ -18,6 +19,7 @@
 - ✅ JSON 数据处理
 - ✅ CSV 数据导出
 - ✅ 数据统计分析
+- ✅ TODO 待办事项 API（CRUD）
 - ✅ 漂亮的 Web 界面
 
 ---
@@ -108,9 +110,15 @@ pilot-test/
 ├── README.md               # 项目说明（本文件）
 ├── 初级功能说明.md          # 初级功能详细文档
 ├── 中级功能说明.md          # 中级功能详细文档
+├── store.js                # 通用 JSON 文件存储模块
+├── auth.js                 # JWT 认证模块
 ├── log.txt                 # 日志文件
+├── test-api.sh             # API 测试脚本
+├── test-auth.sh            # 认证功能测试脚本
 └── data/
-    └── users.json          # 用户数据（自动生成）
+    ├── users.json          # 用户数据（自动生成）
+    ├── todos.json          # 待办事项数据（自动生成）
+    └── accounts.json       # 账号数据（自动生成）
 ```
 
 ---
@@ -170,6 +178,11 @@ curl http://localhost:3000/api/users/export/csv -o users.csv
 | DELETE | `/api/users/:id` | 删除用户 |
 | GET | `/api/stats` | 获取统计信息 |
 | GET | `/api/users/export/csv` | 导出 CSV |
+| GET | `/api/todos` | 获取所有待办事项 |
+| GET | `/api/todos/:id` | 获取单个待办事项 |
+| POST | `/api/todos` | 创建新待办事项 |
+| PUT | `/api/todos/:id` | 更新待办事项 |
+| DELETE | `/api/todos/:id` | 删除待办事项 |
 
 ---
 

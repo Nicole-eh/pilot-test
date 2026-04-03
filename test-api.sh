@@ -92,6 +92,41 @@ echo ""
 echo "================================"
 echo ""
 
+# ========== TODO API 测试 ==========
+echo ""
+echo "================================"
+echo "📝 TODO API 测试"
+echo "================================"
+echo ""
+
+# 测试 8: 获取所有待办事项
+test_endpoint "8️⃣ 获取所有待办事项" "GET" "/api/todos"
+
+# 测试 9: 创建待办事项
+test_endpoint "9️⃣ 创建待办事项" "POST" "/api/todos" \
+    '{"text":"学习 Node.js 测试框架"}'
+
+# 测试 10: 创建第二个待办事项
+test_endpoint "🔟 创建第二个待办事项" "POST" "/api/todos" \
+    '{"text":"完成 API 文档编写"}'
+
+# 测试 11: 获取单个待办事项
+test_endpoint "1️⃣1️⃣ 获取单个待办事项 (ID=1)" "GET" "/api/todos/1"
+
+# 测试 12: 更新待办事项（标记完成）
+test_endpoint "1️⃣2️⃣ 标记待办事项完成 (ID=1)" "PUT" "/api/todos/1" \
+    '{"done":true}'
+
+# 测试 13: 更新待办事项（修改文本）
+test_endpoint "1️⃣3️⃣ 修改待办事项文本 (ID=2)" "PUT" "/api/todos/2" \
+    '{"text":"完成 API 文档编写（已更新）"}'
+
+# 测试 14: 再次获取所有待办事项（验证更改）
+test_endpoint "1️⃣4️⃣ 再次获取所有待办事项" "GET" "/api/todos"
+
+# 测试 15: 删除待办事项 (可选，注释掉以避免删除数据)
+# test_endpoint "1️⃣5️⃣ 删除待办事项 (ID=2)" "DELETE" "/api/todos/2"
+
 echo -e "${GREEN}✅ 所有测试完成！${NC}"
 echo ""
 echo "提示："
